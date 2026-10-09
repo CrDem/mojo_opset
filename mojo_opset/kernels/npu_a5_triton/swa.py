@@ -21,6 +21,7 @@ AUX_MASK = None
 # 详见 docs/swa_mask_template_compress_design.md
 COMPRESS_CAP = 512
 COMPRESS_TILE = 128
+COMPRESS_ALIGN = 128
 
 
 def get_aux_mask():
@@ -105,6 +106,8 @@ def _get_mask_causal_with_window_cached(
 
     M_boundary = M + AUX_MASK_SIZE
     N_boundary = N + AUX_MASK_SIZE
+    if local_window_size > COMPRESS_CAP:
+        N_boundary = (N_boundary + 127) // 128 * 128
     mask_boundary = torch.zeros(M_boundary, N_boundary, dtype=torch.bool)
     mask_boundary[:M, :N] = mask
     mask_boundary = mask_boundary.to(device=device)
@@ -162,7 +165,7 @@ def gen_mask_causal_with_window(mask_ptr_causal, mask_size_m, mask_size_n, M_BLO
         # 斜边界与主对角线不在同一 tile。详见 docs/swa_mask_template_compress_design.md
 
         lwp = COMPRESS_CAP                              # 模板 local 窗口宽 512
-        RT = global_window_size + lwp + 2 * COMPRESS_TILE  # 全 True 块锚点行
+        RT = (global_window_size + lwp + 2 * COMPRESS_TILE + 127) // 128 * 128  # 全 True 块锚点行
         lw_shift = local_windows_size - lwp              # LW 压缩差值，行方向补偿
 
         d  = m_start - n_start                           # 对角偏移 m-n
@@ -198,9 +201,9 @@ def gen_mask_causal_with_window(mask_ptr_causal, mask_size_m, mask_size_n, M_BLO
 
         # n_pos: A/B 直读, C→GW+512, D→GW+128, E→右下全True, F→padding(全False)
         g_ab = cA + cB
-        n_pos = (n_start * g_ab + (global_window_size + lwp) * cC
-                 + (global_window_size + COMPRESS_TILE) * cD
-                 + (RT - (N_BLOCK - 1)) * cE)
+        n_pos = (n_start * g_ab + ((global_window_size + lwp + 127) // 128 * 128) * cC
+                 + ((global_window_size + COMPRESS_TILE + 127) // 128 * 128) * cD
+                 + (RT - ((N_BLOCK + 127) // 128 * 128)) * cE)
 
         # m_pos: A→钳位, B→上移lw_shift, C/D→对角平移(d+n_pos), D额外减lw_shift,
         #        E→RT, F→padding行
@@ -1991,7 +1994,7 @@ def _sdpa_single_block_bwd_dq(
         triton.Config({"BLOCK_M": 128, "BLOCK_N": BN, "multibuffer": True})
         for BN in [64, 128]
     ],
-    key=["HEAD_DIM"],
+    key=["HEAD_DIM", "NUM_KV_HEADS", "IS_CAUSAL", "GLOBAL_WINDOW", "LOCAL_WINDOW"],
 )
 # The packed batch size and [head, token] leading strides vary with the batch.
 @triton.jit(do_not_specialize=["bsz", "stride_delta_h", "stride_lse_h"])

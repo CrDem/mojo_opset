@@ -1,3 +1,5 @@
+import importlib
+
 from functools import partial
 
 import pytest
@@ -532,3 +534,112 @@ def test_compiled_leaves(accuracy_backend, op, output_f32):
             assert leaves <= names, nodes[phase]
     finally:
         torch._dynamo.reset()
+
+
+try:
+    import triton
+    import triton.language as tl
+except ImportError:
+    triton = None
+
+_generate_mask = None
+
+if triton is not None:
+
+    @triton.jit
+    def read_tiles(
+        template,
+        output,
+        positions,
+        rows,
+        cols,
+        seq_len,
+        BM: tl.constexpr,
+        BN: tl.constexpr,
+        GW: tl.constexpr,
+        LW: tl.constexpr,
+    ):
+        tile = tl.program_id(0)
+        m = tl.load(positions + 2 * tile)
+        n = tl.load(positions + 2 * tile + 1)
+        mask = _generate_mask(template, rows, cols, BM, BN, m, n, GW, LW, seq_len, seq_len)
+        offsets = tile * BM * BN + tl.arange(0, BM)[:, None] * BN + tl.arange(0, BN)[None, :]
+        tl.store(output + offsets, mask)
+
+
+@pytest.mark.api("functions.swa")
+@pytest.mark.accuracy
+@pytest.mark.parametrize(
+    "block_m,block_n,window,global_window",
+    [
+        # No local window versus the diagonal-only local window.
+        (128, 128, None, 4),
+        (128, 128, 0, 4),
+        # Compression threshold and sink alignment boundaries.
+        (128, 128, 511, 127),
+        (128, 128, 512, 128),
+        (128, 128, 513, 0),
+        (128, 128, 513, 127),
+        (128, 128, 513, 128),
+        (128, 128, 513, 129),
+        (128, 128, 262143, 4),
+        # Other tile shapes need only one compressed, unaligned-sink case.
+        (64, 64, 513, 129),
+        (256, 64, 513, 129),
+    ],
+)
+def test_swa_mask_template_tiles(accuracy_backend, block_m, block_n, window, global_window):
+    if triton is None:
+        pytest.skip("Triton is required for mask tile checks")
+    _, target, device = accuracy_backend
+    if not (target.startswith("npu.a2") or target.startswith("npu.a5")):
+        pytest.skip("NPU Triton mask template")
+    arch = "a2" if target.startswith("npu.a2") else "a5"
+    if arch == "a5" and block_m > 128:
+        pytest.skip("A5 uses tiles up to 128")
+
+    global _generate_mask
+    backend = importlib.import_module(f"mojo_opset.kernels.npu_{arch}_triton.swa")
+
+    _generate_mask = backend.gen_mask_causal_with_window
+
+    lw = 0 if window is None else window
+    gw = 0 if global_window is None else global_window
+
+    # Probe both sides of each boundary, including cached-prefix offsets that
+    # are not aligned to the Q tile. Only visit K tiles reachable by causal Q.
+    starts = {0, 1, 127, 128, 255, 256, 511, 512, 1024}
+    starts.update(max(0, lw + gw + offset) for offset in (-block_m, -1, 0, 1, block_n, 2 * block_m))
+    positions = set()
+    for m in starts:
+        columns = {
+            0,
+            gw // block_n * block_n,
+            (gw + block_n - 1) // block_n * block_n,
+            m // block_n * block_n,
+            max(0, (m - lw) // block_n * block_n),
+        }
+        for n in columns:
+            if n < m + block_m:
+                positions.add((m, n))
+    positions = sorted(positions)
+    coordinates = torch.tensor(positions, dtype=torch.int32, device=device)
+    template = backend.get_mask_causal_with_window(block_m, block_n, window, global_window, device)
+    output = torch.empty((len(positions), block_m, block_n), dtype=torch.bool, device=device)
+    read_tiles[(len(positions),)](
+        template,
+        output,
+        coordinates,
+        *template.shape,
+        max(starts) + block_m,
+        block_m,
+        block_n,
+        global_window,
+        window,
+    )
+    cpu = torch.tensor(positions, device="cpu")
+    q = cpu[:, 0, None, None] + torch.arange(block_m, device="cpu")[None, :, None]
+    k = cpu[:, 1, None, None] + torch.arange(block_n, device="cpu")[None, None, :]
+    local = (k >= q - lw) if window is not None else torch.zeros_like(k <= q)
+    expected = (k <= q) & ((k < gw) | local)
+    assert_close(output.cpu(), expected, rtol=0, atol=0)
