@@ -267,8 +267,8 @@ def build_problem(
 
 def _require_flex(backend):
     impl, _, device = backend
-    if device != "npu" or impl not in (None, "triton", "torch_reference"):
-        pytest.skip("The migrated FlexAttention providers are NPU Triton and torch_reference")
+    if device != "npu" or impl not in (None, "triton", "torch"):
+        pytest.skip("The migrated FlexAttention providers are NPU Triton and torch")
     return impl, device
 
 
@@ -340,7 +340,7 @@ def test_business(
     )
     reference_inputs = tuple(x.detach().clone().requires_grad_(True) for x in inputs)
     actual = F.flex_attention(*inputs, block_mask=mask, implementation=impl)
-    expected = F.flex_attention(*reference_inputs, block_mask=mask, implementation="torch_reference")
+    expected = F.flex_attention(*reference_inputs, block_mask=mask, implementation="torch")
     assert_close(actual, expected, dtype, rtol=5e-3, atol=5e-3)
     length = inputs[0].shape[2]
     seed_scale = torch.tensor(length, dtype=dtype).item() / actual.numel()

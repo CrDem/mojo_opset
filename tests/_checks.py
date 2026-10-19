@@ -115,7 +115,7 @@ def assert_accuracy(function, inputs, *, implementation, gradient_scale=1.0, gra
     actual_inputs = clone_with_grad(inputs)
     reference_inputs = clone_with_grad(inputs)
     actual = function(*actual_inputs, implementation=implementation, **kwargs)
-    expected = function(*reference_inputs, implementation="torch_reference", **kwargs)
+    expected = function(*reference_inputs, implementation="torch", **kwargs)
     actual = (actual,) if isinstance(actual, torch.Tensor) else actual
     expected = (expected,) if isinstance(expected, torch.Tensor) else expected
     assert len(actual) == len(expected)

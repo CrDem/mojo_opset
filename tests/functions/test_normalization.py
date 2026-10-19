@@ -51,7 +51,10 @@ M15_RMS_SHAPES = [(13, 192), (257, 6144)]
 MOJO_RMS_SHAPES = [(32, 1024), (64, 8192), (57, 7338), (77, 489), (763, 8777), (7762, 18778)]
 
 
-RMS_NORM_CASES = [(shape, torch.float32) for shape in MOJO_RMS_SHAPES + M15_RMS_SHAPES] + [((7, 513), None)]
+RMS_NORM_CASES = [(shape, torch.float32) for shape in MOJO_RMS_SHAPES + M15_RMS_SHAPES] + [
+    ((7, 513), None),
+    ((2, 7, 513), None),
+]
 
 
 @pytest.mark.api("functions.rms_norm")
@@ -71,7 +74,8 @@ def test_rms_norm(accuracy_backend, dtype, shape, weight_dtype):
         else torch.rand_like(reference_inputs[0])
     )
 
-    expected = F.rms_norm(*reference_inputs, implementation="torch_reference")
+    values = reference_inputs[0].float()
+    expected = (reference_inputs[1] * (values * torch.rsqrt(values.pow(2).mean(dim=-1, keepdim=True) + 1e-6))).to(dtype)
     actual = F.rms_norm(*actual_inputs, implementation=implementation)
     expected_grads = torch.autograd.grad(expected, reference_inputs, grad_output)
     actual_grads = torch.autograd.grad(actual, actual_inputs, grad_output)
@@ -102,7 +106,7 @@ def test_norm_infer(accuracy_backend, op, dtype, dim):
         inputs += (torch.randn_like(weight),)
     fn = getattr(F, op)
     actual = fn(*inputs, implementation=implementation)
-    expected = fn(*inputs, implementation="torch_reference")
+    expected = fn(*inputs, implementation="torch")
     assert_close(actual, expected, dtype)
     assert actual.dtype == x.dtype and actual.is_contiguous()
 
@@ -119,7 +123,7 @@ def test_layer_norm_affine(accuracy_backend, has_weight, has_bias):
     weight = torch.randn(128, device=device) if has_weight else None
     bias = torch.randn(128, device=device) if has_bias else None
     actual = F.layer_norm_infer(x, weight, bias, implementation=implementation)
-    expected = F.layer_norm_infer(x, weight, bias, implementation="torch_reference")
+    expected = F.layer_norm_infer(x, weight, bias, implementation="torch")
     assert_close(actual, expected, x.dtype)
 
 
@@ -133,7 +137,7 @@ def test_group_rms_norm(accuracy_backend, dtype, affine):
     groups = [packed[:, :4], packed[:, 4:]]
     weight = torch.randn(2, 128, device=device, dtype=dtype) if affine else None
     actual = F.group_rms_norm_infer(groups, weight, implementation=implementation)
-    expected = F.group_rms_norm_infer(groups, weight, implementation="torch_reference")
+    expected = F.group_rms_norm_infer(groups, weight, implementation="torch")
     for output, ref, original in zip(actual, expected, groups):
         assert_close(output, ref, dtype)
         assert output.shape == original.shape and output.dtype == dtype and output.is_contiguous()
@@ -145,7 +149,7 @@ def test_group_rms_norm(accuracy_backend, dtype, affine):
 @pytest.mark.accuracy
 def test_group_layout(accuracy_backend, shapes, dtype):
     implementation, target, device = accuracy_backend
-    if implementation != "torch_reference" and not target.startswith("npu."):
+    if implementation != "torch" and not target.startswith("npu."):
         pytest.skip("NPU grouped normalization layout regression")
     selected = implementation or resolve_implementation("group_rms_norm_infer", Target.parse(target))
     groups = [torch.randn(shape, device=device, dtype=dtype) for shape in shapes]
@@ -155,7 +159,7 @@ def test_group_layout(accuracy_backend, shapes, dtype):
             F.group_rms_norm_infer(groups, weight, implementation=implementation)
         return
     actual = F.group_rms_norm_infer(groups, weight, implementation=implementation)
-    expected = F.group_rms_norm_infer(groups, weight, implementation="torch_reference")
+    expected = F.group_rms_norm_infer(groups, weight, implementation="torch")
     for output, ref in zip(actual, expected):
         assert_norm_close(output, ref, rms=True)
 
@@ -181,7 +185,7 @@ def test_residual_norm(accuracy_backend, op, dtype, norm_pos):
     original_x, original_residual = x.clone(), residual.clone()
     fn = getattr(F, op)
     actual = fn(*inputs, norm_pos=norm_pos, implementation=implementation)
-    expected = fn(*inputs, norm_pos=norm_pos, implementation="torch_reference")
+    expected = fn(*inputs, norm_pos=norm_pos, implementation="torch")
     for output, ref in zip(actual, expected):
         assert_close(output, ref, dtype)
         assert output.dtype == dtype and output.is_contiguous()
@@ -218,7 +222,7 @@ def test_infer_autograd(op):
     else:
         args = (x, weight)
     with pytest.raises(RuntimeError, match="does not support autograd"):
-        getattr(F, op)(*args, implementation="torch_reference")
+        getattr(F, op)(*args, implementation="torch")
 
 
 # Keep the original master operator matrix in addition to the
@@ -237,7 +241,7 @@ def test_norm_shapes(accuracy_backend, op, shape, dtype):
     if op == "layer_norm_infer":
         inputs += (torch.randn_like(inputs[1]),)
     actual = getattr(F, op)(*inputs, eps=1e-5, implementation=implementation)
-    expected = getattr(F, op)(*inputs, eps=1e-5, implementation="torch_reference")
+    expected = getattr(F, op)(*inputs, eps=1e-5, implementation="torch")
     assert_norm_close(actual, expected, rms=op == "rms_norm_infer")
 
 
@@ -252,7 +256,7 @@ def test_group_shapes(accuracy_backend, tokens, heads, dim, dtype):
     groups = list(torch.split(packed, heads, dim=1))
     weight = torch.randn(len(heads), dim, device=device, dtype=dtype)
     actual = F.group_rms_norm_infer(groups, weight, eps=1e-5, implementation=implementation)
-    expected = F.group_rms_norm_infer(groups, weight, eps=1e-5, implementation="torch_reference")
+    expected = F.group_rms_norm_infer(groups, weight, eps=1e-5, implementation="torch")
     for output, ref in zip(actual, expected):
         assert_norm_close(output, ref, rms=True)
 
@@ -279,7 +283,7 @@ def test_group_dispatch(accuracy_backend, group_count, dim, affine, dtype):
     groups = [torch.randn(3, heads + 1, dim, device=device, dtype=dtype) for heads in range(group_count)]
     weight = torch.randn(group_count, dim, device=device, dtype=dtype) if affine else None
     actual = F.group_rms_norm_infer(groups, weight, implementation=implementation)
-    expected = F.group_rms_norm_infer(groups, weight, implementation="torch_reference")
+    expected = F.group_rms_norm_infer(groups, weight, implementation="torch")
     for output, ref in zip(actual, expected):
         assert_close(output, ref, dtype)
 
@@ -306,7 +310,7 @@ def test_residual_shapes(accuracy_backend, op, shape, norm_pos, dtype):
     if op == "residual_add_layer_norm_infer":
         inputs += (torch.randn_like(inputs[-1]),)
     actual = getattr(F, op)(*inputs, norm_pos=norm_pos, eps=1e-5, implementation=implementation)
-    expected = getattr(F, op)(*inputs, norm_pos=norm_pos, eps=1e-5, implementation="torch_reference")
+    expected = getattr(F, op)(*inputs, norm_pos=norm_pos, eps=1e-5, implementation="torch")
     for output, ref in zip(actual, expected):
         assert_norm_close(output, ref)
 
@@ -330,9 +334,9 @@ def test_rms_norm_bitwise(accuracy_backend, dtype, shape, weight_dtype):
 @pytest.mark.parametrize("backend", ["eager", "aot_eager"])
 def test_compiled_layout(accuracy_backend, op, backend):
     implementation, target, device = accuracy_backend
-    if implementation not in (None, "triton") or not target.startswith("npu."):
-        pytest.skip("NPU Triton contiguous-output contract")
-    implementation = "triton"
+    if implementation not in (None, "triton", "torch") or not target.startswith("npu."):
+        pytest.skip("Torch/NPU Triton contiguous-output contract")
+    implementation = implementation or "triton"
     scaled = op == "swiglu_scaled"
     op = "swiglu" if scaled else op
     preload(op, implementation=implementation)
@@ -355,7 +359,7 @@ def test_compiled_layout(accuracy_backend, op, backend):
         assert captured_metadata == metadata
         assert all(y.is_contiguous() for y in actual)
         assert captured_metadata == tuple((y.stride(), y.is_contiguous()) for y in actual)
-        reference = getattr(F, op)(*inputs, **kwargs, implementation="torch_reference")
+        reference = getattr(F, op)(*inputs, **kwargs, implementation="torch")
         reference = reference if isinstance(reference, tuple) else (reference,)
         for y, expected in zip(actual, reference):
             torch.testing.assert_close(y, expected, rtol=2e-2, atol=2e-2)
@@ -375,4 +379,4 @@ def test_weight_shape(shape):
     x = torch.randn(2, 4, requires_grad=True)
     weight = torch.ones(shape, requires_grad=True)
     with pytest.raises(ValueError, match="one-dimensional"):
-        functions.rms_norm(x, weight, implementation="torch_reference")
+        functions.rms_norm(x, weight, implementation="torch")

@@ -1,6 +1,7 @@
 """torch_npu kernel provider."""
 
 OPS = {
+    "flash_attention": "attention",
     "rms_norm_quant": "fused_quantization",
     "layer_norm_quant": "fused_quantization",
     "residual_add_rms_norm_quant": "fused_quantization",

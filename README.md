@@ -32,7 +32,7 @@ from mojo_opset import functions, modules
 
 x = torch.randn(8, 1024, device="npu", dtype=torch.bfloat16)
 y = functions.silu(x)  # Uses configuration for the detected target.
-y_ref = functions.silu(x, implementation="torch_reference")
+y_ref = functions.silu(x, implementation="torch")
 norm = modules.RMSNorm(1024, implementation="triton").npu()
 y = norm(x)
 ```
@@ -63,7 +63,7 @@ explicit implementation= → exact SKU config → architecture config
 ```
 
 This is configuration inheritance, not execution fallback. Use exact
-implementation names from the support table, or `torch_reference`.
+implementation names from the support table, or `torch`.
 
 An external YAML file can override just a few entries:
 

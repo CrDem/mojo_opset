@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from mojo_opset import functions as F
-from mojo_opset.kernels.torch_reference.flex_attention import _block_mask_to_dense
+from mojo_opset.kernels.torch.flex_attention import _block_mask_to_dense
 from mojo_opset.utils.flex_attention_mask import create_flex_block_mask
 from tests._checks import assert_close
 from tests._checks import assert_repeatable
@@ -12,8 +12,8 @@ from tests._checks import assert_repeatable
 
 def _require_flex(backend):
     impl, _, device = backend
-    if device != "npu" or impl not in (None, "triton", "torch_reference"):
-        pytest.skip("The migrated FlexAttention providers are NPU Triton and torch_reference")
+    if device != "npu" or impl not in (None, "triton", "torch"):
+        pytest.skip("The migrated FlexAttention providers are NPU Triton and torch")
     return impl, device
 
 
@@ -50,7 +50,7 @@ def test_accuracy(accuracy_backend, case):
     assert_close(_block_mask_to_dense(mask, case[2], case[3], device), mask_mod(0, 0, qidx, kidx), rtol=0, atol=0)
     refs = tuple(x.detach().clone().requires_grad_(True) for x in inputs)
     actual = F.flex_attention_v2(*inputs, block_mask=mask, enable_gqa=True, implementation=impl)
-    expected = F.flex_attention_v2(*refs, block_mask=mask, enable_gqa=True, implementation="torch_reference")
+    expected = F.flex_attention_v2(*refs, block_mask=mask, enable_gqa=True, implementation="torch")
     assert_close(actual, expected, torch.bfloat16, rtol=2e-2, atol=2e-2)
     upstream = torch.randn_like(actual)
     for a, e in zip(torch.autograd.grad(actual, inputs, upstream), torch.autograd.grad(expected, refs, upstream)):

@@ -23,7 +23,7 @@ def batch_case(case, device, impl):
     x, w, s1, s2 = make_quant_batch(case, device)
     call = M.QuantBatchGemmReduceSum(w, case[4], implementation=impl)
     ref = lambda a, b, c: F.quant_batch_gemm_reduce_sum(
-        a, w, b, c, trans_weight=case[4], implementation="torch_reference"
+        a, w, b, c, trans_weight=case[4], implementation="torch"
     )
     return (call, ref, (x, s1, s2))
 
@@ -55,7 +55,7 @@ def group_case(case, dtype, device, impl):
         pytest.skip("Original torch_npu grouped matmul does not support float32")
     x, weight, counts = make_group(case, dtype, device)
     call = M.GroupGemm(weight, case[4], implementation=impl)
-    ref = partial(F.group_gemm, weight=weight, trans_weight=case[4], implementation="torch_reference")
+    ref = partial(F.group_gemm, weight=weight, trans_weight=case[4], implementation="torch")
     return (lambda a, b: call(a, b), lambda a, b: ref(a, group_list=b), (x, counts))
 
 
@@ -87,13 +87,13 @@ def quant_case(case, dtype, transposed, device, impl):
     call = M.QuantGemm(case[1], case[2], dtype, transposed, implementation=impl, device=device)
     call.load_state_dict({"weight": w, "weight_scale": ws})
     ref = lambda a, scale: F.quant_gemm(
-        a, w, scale, ws, output_dtype=dtype, trans_weight=transposed, implementation="torch_reference"
+        a, w, scale, ws, output_dtype=dtype, trans_weight=transposed, implementation="torch"
     )
     return (call, ref, (x, xs))
 
 
 def skip_batch(impl, device):
-    if device == "npu" and impl != "torch_reference":
+    if device == "npu" and impl != "torch":
         pytest.skip("Inherited master exclusion: CANN 8.2 quantized batch reduction issue")
 
 
@@ -201,7 +201,7 @@ def test_quant_weight_reuse_and_updates(accuracy_backend, monkeypatch, transpose
     def check(expected_preparations):
         expected = F.quant_gemm(
             x, module.weight, xs, module.weight_scale, output_dtype=torch.bfloat16,
-            trans_weight=transposed, implementation="torch_reference",
+            trans_weight=transposed, implementation="torch",
         )
         for _ in range(2):
             assert_close(call(x, xs), expected, torch.bfloat16, rtol=1e-2, atol=1e-2)

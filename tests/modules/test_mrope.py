@@ -50,9 +50,9 @@ def test_mrope(accuracy_backend, case, dtype, inplace):
         else modules.MultimodalRoPEInfer(implementation=implementation)
     )
     reference = (
-        modules.MultimodalRoPEInplaceInfer(inplace=True, implementation="torch_reference")
+        modules.MultimodalRoPEInplaceInfer(inplace=True, implementation="torch")
         if inplace
-        else modules.MultimodalRoPEInfer(implementation="torch_reference")
+        else modules.MultimodalRoPEInfer(implementation="torch")
     )
     actual = function(*inputs, **options)
     expected = reference(original_q.clone(), original_k.clone(), cos, sin, **options)

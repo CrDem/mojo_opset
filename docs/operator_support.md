@@ -1,7 +1,7 @@
 # Operator support
 
 Implementations by architecture; `—` means no enabled accelerator implementation.
-All functions also support `torch_reference`. See function docstrings for
+All functions also support `torch`. See function docstrings for
 supported shapes, dtypes and options.
 
 | Function | `npu.a2` | `npu.a5` |
@@ -14,7 +14,7 @@ supported shapes, dtypes and options.
 | `diffusion_attention` | triton | triton |
 | `dynamic_quant` | triton, torch_npu | triton, torch_npu |
 | `embedding_nf4_dequant` | triton | triton |
-| `flash_attention` | triton | triton |
+| `flash_attention` | triton, torch_npu | triton, torch_npu |
 | `flash_attention_infer` | triton | triton |
 | `flex_attention` | triton | triton |
 | `flex_attention_v2` | triton | triton |
@@ -50,7 +50,7 @@ supported shapes, dtypes and options.
 | `rope` | triton | triton |
 | `rope_cos_sin` | triton | triton |
 | `rope_infer` | triton, torch_npu | triton, torch_npu |
-| `rotate_activation` | torch_reference | torch_reference |
+| `rotate_activation` | torch | torch |
 | `sdpa_infer` | triton | triton |
 | `silu` | triton, torch_npu | triton, torch_npu |
 | `static_quant` | triton | triton |

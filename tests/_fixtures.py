@@ -16,7 +16,7 @@ def _bindings(package, target):
 def check_implementation(op_ids, implementation, target):
     """Check provider declarations only; missing dependencies and broken wrappers must fail at runtime."""
     target = Target.parse(target)
-    known_ops = import_module("mojo_opset.kernels.torch_reference").OPS
+    known_ops = import_module("mojo_opset.kernels.torch").OPS
     assert op_ids and set(op_ids) <= known_ops.keys(), f"Missing or unknown test op IDs: {op_ids}"
     for op_id in sorted(op_ids):
         selected = implementation
@@ -32,7 +32,7 @@ def check_implementation(op_ids, implementation, target):
                 if available:
                     raise  # An implemented op missing from YAML is a config error.
                 pytest.skip(f"No provider for {op_id} on {target}")
-        if selected != "torch_reference":
+        if selected != "torch":
             package = _dispatch._provider_package(target, selected)
             if op_id not in _bindings(package, target):
                 if implementation is None:

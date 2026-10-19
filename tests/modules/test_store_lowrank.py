@@ -30,6 +30,6 @@ def test_store(accuracy_backend, shape, tokens):
     cache, *inputs = make_store_case(shape, tokens, device)
     actual = modules.StoreLowrank(implementation=implementation)(cache, *inputs, tokens)
     expected_cache = torch.zeros_like(cache)
-    expected = modules.StoreLowrank(implementation="torch_reference")(expected_cache, *inputs, tokens)
+    expected = modules.StoreLowrank(implementation="torch")(expected_cache, *inputs, tokens)
     assert actual is cache
     assert_close(actual, expected, rtol=0, atol=0)

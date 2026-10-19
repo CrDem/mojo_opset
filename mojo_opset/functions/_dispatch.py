@@ -99,7 +99,7 @@ def load_impl(
     if implementation is not None:
         implementation = normalize_name(implementation, "implementation")
     resolved_target = None
-    if implementation != "torch_reference":
+    if implementation != "torch":
         resolved_target = detect_target(target)
     snapshot = _config._get_config_snapshot() if implementation is None else _config._CONFIG
     state = _DISPATCH_STATE
@@ -114,8 +114,8 @@ def load_impl(
         resolved_implementation = implementation
         if resolved_implementation is None:
             resolved_implementation = resolve_implementation(normalized_op_id, resolved_target, snapshot)
-        if resolved_implementation == "torch_reference":
-            provider_package = "mojo_opset.kernels.torch_reference"
+        if resolved_implementation == "torch":
+            provider_package = "mojo_opset.kernels.torch"
             provider_target = None
         else:
             provider_package = _provider_package(resolved_target, resolved_implementation)

@@ -115,7 +115,7 @@ def test_ngram(accuracy_backend, case):
     implementation, _, device = accuracy_backend
     ids, history, lens, sizes, _, grams, vocab = make_ngram_case(case, device)
     module = modules.OverEncodingNGram(vocab, sizes, grams, implementation=implementation).to(device)
-    reference = modules.OverEncodingNGram(vocab, sizes, grams, implementation="torch_reference").to(device)
+    reference = modules.OverEncodingNGram(vocab, sizes, grams, implementation="torch").to(device)
     assert_close(module(ids, history, lens), reference(ids, history, lens), rtol=0, atol=0)
 
 
@@ -125,7 +125,7 @@ def _encoding_modules(case, device, implementation):
     if case.startswith("cpu"):
         reference_options["mega_embedding_cpu_only"] = False
         reference_options["_mega_embedding_weight"] = options["_mega_embedding_weight"].to(device)
-    reference = modules.OverEncoding(*config, **reference_options, implementation="torch_reference").to(device)
+    reference = modules.OverEncoding(*config, **reference_options, implementation="torch").to(device)
     actual = modules.OverEncoding(*config, **options, implementation=implementation).to(device)
     with torch.no_grad():
         for part in reference.modules():

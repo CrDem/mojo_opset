@@ -43,7 +43,8 @@ def silu(x):
         triton.Config({"BLOCK_SIZE_M": 24}),
         triton.Config({"BLOCK_SIZE_M": 32}),
     ],
-    key=["n_cols"],
+    # Scales add live buffers; never reuse an unscaled autotune result.
+    key=["n_cols", "HAS_SCALES"],
 )
 @libentry()
 @triton.jit(do_not_specialize=["n_rows"])
@@ -105,7 +106,8 @@ def _swiglu_fwd_kernel(
         triton.Config({"BLOCK_SIZE_M": 24}),
         triton.Config({"BLOCK_SIZE_M": 32}),
     ],
-    key=["n_cols"],
+    # Scales add live buffers; never reuse an unscaled autotune result.
+    key=["n_cols", "HAS_SCALES"],
     restore_value=["dc", "da", "db", "dscales"],
 )
 @libentry()

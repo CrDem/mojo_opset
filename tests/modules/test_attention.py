@@ -71,7 +71,7 @@ def test_swa_infer(
         global_window_size=global_window,
         gqa_interleave=layout == "ABAB",
         softmax_scale=dim**-0.5,
-        implementation="torch_reference",
+        implementation="torch",
     )
     assert not actual.requires_grad
     assert_swa_infer_close(actual, expected)
@@ -86,5 +86,5 @@ def test_varlen_fa(accuracy_backend, causal, interleave):
     inputs = make_varlen_fa_module_inputs(device)
     module = modules.VarlenFAInfer(causal, interleave, implementation=implementation)
     actual = module(*inputs)
-    expected = F.varlen_fa_infer(*inputs, is_causal=causal, gqa_interleave=interleave, implementation="torch_reference")
+    expected = F.varlen_fa_infer(*inputs, is_causal=causal, gqa_interleave=interleave, implementation="torch")
     assert_close(actual, expected, inputs[0].dtype)

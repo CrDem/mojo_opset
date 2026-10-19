@@ -123,7 +123,7 @@ def test_store(accuracy_backend, case, precompute):
 
     actual = run(*inputs)
     expected = F.store_paged_kv_cache(
-        *inputs, data["k_cache"].clone(), data["v_cache"].clone(), implementation="torch_reference", **metadata
+        *inputs, data["k_cache"].clone(), data["v_cache"].clone(), implementation="torch", **metadata
     )
     for a, e in zip(actual, expected):
         assert_close(a, e, rtol=0, atol=0)

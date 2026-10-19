@@ -69,7 +69,7 @@ def _make_quant_case(case, backend):
     implementation, _, device = backend
     if name == "Dequant":
         x, scale = make_static_quant_case(shape, scale_shape, dtype, device)
-        q, _ = functions.static_quant(x, scale, implementation="torch_reference")
+        q, _ = functions.static_quant(x, scale, implementation="torch")
         inputs = (q, scale)
         options = dict(output_dtype=dtype)
     elif name == "StaticQuant":
@@ -79,7 +79,7 @@ def _make_quant_case(case, backend):
         inputs = ((torch.zeros if zero else torch.randn)(shape, device=device, dtype=dtype),)
         options = dict(input_size=None if zero else shape[-1], device=device)
     actual = getattr(modules, name)(**options, implementation=implementation)
-    reference = getattr(modules, name)(**options, implementation="torch_reference")
+    reference = getattr(modules, name)(**options, implementation="torch")
     with torch.no_grad():
         if name == "StaticQuant":
             actual.scale.copy_(scale)
@@ -107,7 +107,7 @@ def test_quant(accuracy_backend, name):
     impl, _, device = accuracy_backend
     kwargs = {} if name == "Dequant" else dict(input_size=128, device=device)
     actual = getattr(modules, name)(**kwargs, implementation=impl)
-    reference = getattr(modules, name)(**kwargs, implementation="torch_reference")
+    reference = getattr(modules, name)(**kwargs, implementation="torch")
     reference.load_state_dict(actual.state_dict())
     inputs = (torch.randn(3, 128, device=device, dtype=torch.bfloat16),)
     if name == "Dequant":

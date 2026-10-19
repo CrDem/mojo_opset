@@ -16,6 +16,6 @@ def test_update(accuracy_backend, dtype):
     reference_state = state.clone()
     weight = torch.randn(64, 4, device=device, dtype=dtype)
     actual = modules.CausalConv1dUpdateStateInfer(implementation=implementation)(x, state, weight)
-    expected = functions.causal_conv1d_update_state_infer(x, reference_state, weight, implementation="torch_reference")
+    expected = functions.causal_conv1d_update_state_infer(x, reference_state, weight, implementation="torch")
     assert_close(actual, expected, dtype)
     assert_close(state, reference_state, rtol=0, atol=0)

@@ -49,7 +49,7 @@ def make_varlen_fa_inputs(device, dtype, lengths, heads):
 @pytest.mark.accuracy
 def test_varlen_fa(accuracy_backend, dtype, causal, interleave, lengths, heads, case):
     implementation, _, device = accuracy_backend
-    if case != "default" and implementation == "torch_reference":
+    if case != "default" and implementation == "torch":
         pytest.skip("native launch contract")
     stream = torch.npu.Stream() if case == "stream" else None
     context = torch.npu.stream(stream) if stream is not None else nullcontext()
@@ -79,7 +79,7 @@ def test_varlen_fa(accuracy_backend, dtype, causal, interleave, lengths, heads, 
         actual = F.varlen_fa_infer(*inputs, implementation=implementation, **kwargs)
     if stream is not None:
         stream.synchronize()
-    expected = F.varlen_fa_infer(*inputs, implementation="torch_reference", **kwargs)
+    expected = F.varlen_fa_infer(*inputs, implementation="torch", **kwargs)
     assert not actual.requires_grad
     assert_close(actual, expected, dtype)
 
@@ -98,7 +98,7 @@ def test_reference_head_mapping(interleave, expected_heads):
     k = torch.zeros(4, 3, 8)
     v = torch.arange(3, dtype=q.dtype).view(1, 3, 1).expand_as(k)
     cq, ck = torch.tensor([0, 3], dtype=torch.int32), torch.tensor([0, 4], dtype=torch.int32)
-    out = F.varlen_fa_infer(q, k, v, cq, ck, gqa_interleave=interleave, implementation="torch_reference")
+    out = F.varlen_fa_infer(q, k, v, cq, ck, gqa_interleave=interleave, implementation="torch")
     expected = torch.tensor(expected_heads, dtype=q.dtype).view(1, 5, 1).expand_as(q)
     torch.testing.assert_close(out, expected)
 
@@ -108,7 +108,7 @@ def test_reference_head_mapping(interleave, expected_heads):
 def test_causal_alignment():
     q, k = torch.zeros(2, 1, 4), torch.zeros(4, 1, 4)
     v = torch.arange(4, dtype=q.dtype).view(4, 1, 1).expand_as(k)
-    out = F.varlen_fa_infer(q, k, v, torch.tensor([0, 2]), torch.tensor([0, 4]), implementation="torch_reference")
+    out = F.varlen_fa_infer(q, k, v, torch.tensor([0, 2]), torch.tensor([0, 4]), implementation="torch")
     torch.testing.assert_close(out[:, 0, 0], torch.tensor([1.0, 1.5]))
 
 
@@ -118,16 +118,16 @@ def test_no_autograd():
     q = torch.randn(4, 2, 8, requires_grad=True)
     cu = torch.tensor([0, 4], dtype=torch.int32)
     with pytest.raises(RuntimeError, match="does not support autograd"):
-        F.varlen_fa_infer(q, q, q, cu, implementation="torch_reference")
+        F.varlen_fa_infer(q, q, q, cu, implementation="torch")
     with torch.no_grad():
-        assert not F.varlen_fa_infer(q, q, q, cu, implementation="torch_reference").requires_grad
+        assert not F.varlen_fa_infer(q, q, q, cu, implementation="torch").requires_grad
 
 
 @pytest.mark.accuracy
 @pytest.mark.api("functions.varlen_fa_infer")
 def test_compile(accuracy_backend):
     implementation, _, device = accuracy_backend
-    if implementation == "torch_reference":
+    if implementation == "torch":
         pytest.skip("native leaf contract")
     preload("varlen_fa_infer", implementation="native")
     q = torch.randn(129, 5, 128, device=device, dtype=torch.bfloat16)

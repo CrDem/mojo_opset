@@ -36,7 +36,7 @@ def test_swa_reference(dtype):
     p = (scores - scores.amax(-1, keepdim=True)).exp()
     expected = torch.bmm(p.to(dtype), v.transpose(0, 1)).float() / p.sum(-1, keepdim=True)
     expected = expected.transpose(0, 1).to(dtype)
-    actual = F.swa(q, k, v, cq, ck, softmax_scale=0.25, implementation="torch_reference")
+    actual = F.swa(q, k, v, cq, ck, softmax_scale=0.25, implementation="torch")
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
@@ -61,12 +61,14 @@ def test_swa_reference_chunked_gradients(dtype, large, small, pattern, autocast_
         grad_output[1024:1536] = -large
     with torch.autocast("cpu", dtype=dtype, enabled=autocast_enabled):
         output = F.swa(
-            q, k, v,
+            q,
+            k,
+            v,
             torch.tensor([0, tokens], dtype=torch.int32),
             torch.tensor([0, 2], dtype=torch.int32),
             is_causal=False,
             softmax_scale=1.0,
-            implementation="torch_reference",
+            implementation="torch",
         )
         dq, dk, dv = torch.autograd.grad(output, (q, k, v), grad_output)
     # Both attention probabilities are exactly 1/2 and output is exactly zero:
@@ -84,7 +86,7 @@ def test_reference_flash_infer_matches_forward(causal):
     torch.manual_seed(1)
     q, k, v = torch.randn(7, 4, 8), torch.randn(11, 2, 8), torch.randn(11, 2, 8)
     cq, ck = torch.tensor([0, 3, 7], dtype=torch.int32), torch.tensor([0, 5, 11], dtype=torch.int32)
-    kwargs = dict(causal=causal, implementation="torch_reference")
+    kwargs = dict(causal=causal, implementation="torch")
     actual = F.flash_attention_infer(q, k, v, cq, ck, 4, 6, **kwargs)
     expected = F.flash_attention(q, k, v, cq, ck, 4, 6, **kwargs)
     torch.testing.assert_close(actual, expected)
@@ -104,7 +106,7 @@ def test_flash_infer_rejects_unsupported_options(kwargs, error):
     q = torch.randn(3, 1, 8)
     cu = torch.tensor([0, 3], dtype=torch.int32)
     with pytest.raises(error):
-        F.flash_attention_infer(q, q, q, cu, cu, 3, 3, implementation="torch_reference", **kwargs)
+        F.flash_attention_infer(q, q, q, cu, cu, 3, 3, implementation="torch", **kwargs)
 
 
 NATIVE_SWA_INFER_LENGTHS = [([129, 257], [513, 1025]), ([129, 257], [2049, 4097]), ([1024], [9216])]
@@ -222,45 +224,73 @@ def test_swa_windows(accuracy_backend, interleave, windows):
     )
 
 
-def _make_attention_inputs(device, dtype):
+def _make_attention_inputs(device, dtype, tokens=256, q_heads=4, kv_heads=2):
     return tuple(
         torch.randn(shape, device=device, dtype=dtype, requires_grad=True)
-        for shape in ((256, 4, 128), (256, 2, 128), (256, 2, 128))
+        for shape in ((tokens, q_heads, 128), (tokens, kv_heads, 128), (tokens, kv_heads, 128))
     )
 
 
-@pytest.mark.parametrize("dtype", (torch.bfloat16,))
 @pytest.mark.parametrize(
-    "function_name,output_f32",
+    "function_name,output_f32,tokens,q_heads,kv_heads,dtype,causal,packed",
     [
-        pytest.param(op, output_f32, marks=pytest.mark.api("functions." + op))
-        for op, output_f32 in [("flash_attention", None), ("swa", False), ("swa", True)]
+        pytest.param(
+            "flash_attention",
+            None,
+            tokens,
+            hq,
+            hk,
+            dtype,
+            causal,
+            packed,
+            marks=pytest.mark.api("functions.flash_attention"),
+        )
+        for tokens, hq, hk in [
+            (256, 4, 2),
+            # Real head counts; T=1024 is a single-card CI truncation.
+            # TODO: restore after BF16 GQA dK/dV tolerance failures in Triton, torch_npu and native are resolved.
+            # (1024, 48, 8),
+            # (1024, 56, 8),
+        ]
+        for dtype in (torch.float16, torch.bfloat16)
+        for causal in (False, True)
+        for packed in (False, True)
+    ]
+    + [
+        pytest.param("swa", f32, 256, 4, 2, torch.bfloat16, True, False, marks=pytest.mark.api("functions.swa"))
+        for f32 in (False, True)
     ],
 )
 @pytest.mark.accuracy
-def test_attention(accuracy_backend, dtype, function_name, output_f32):
-    implementation, target, device = accuracy_backend
-    reference_inputs = _make_attention_inputs(device, dtype)
+def test_attention(accuracy_backend, dtype, function_name, output_f32, tokens, q_heads, kv_heads, causal, packed):
+    implementation, _, device = accuracy_backend
+    reference_inputs = _make_attention_inputs(device, dtype, tokens, q_heads, kv_heads)
+    if packed:
+        reference_inputs = (
+            reference_inputs[0],
+            *(torch.randn(tokens + 2, kv_heads, 128, device=device, dtype=dtype, requires_grad=True) for _ in range(2)),
+        )
     actual_inputs = clone_with_grad(reference_inputs)
-    cu_lens = torch.tensor([0, 256], device=device, dtype=torch.int32)
+    cq = torch.tensor([0, tokens // 2 - 1, tokens] if packed else [0, tokens], device=device, dtype=torch.int32)
+    ck = torch.tensor([0, tokens // 2, tokens + 2] if packed else [0, tokens], device=device, dtype=torch.int32)
     function = getattr(F, function_name)
     kwargs = (
-        {"max_q_len": 256, "max_k_len": 256, "causal": True}
+        {"max_q_len": tokens, "max_k_len": tokens + 2 if packed else tokens, "causal": causal}
         if function_name == "flash_attention"
-        else {"is_causal": True, "local_window_size": 128, "global_window_size": 16, "output_f32": output_f32}
+        else {"is_causal": causal, "local_window_size": 128, "global_window_size": 16, "output_f32": output_f32}
     )
 
     expected = function(
         *reference_inputs,
-        cu_lens,
-        cu_lens,
-        implementation="torch_reference",
+        cq,
+        ck,
+        implementation="torch",
         **kwargs,
     )
     actual = function(
         *actual_inputs,
-        cu_lens,
-        cu_lens,
+        cq,
+        ck,
         implementation=implementation,
         **kwargs,
     )
@@ -285,7 +315,7 @@ def test_flash_attention_infer(accuracy_backend, causal):
     q = torch.randn(226, 4, 128, device=device, dtype=torch.bfloat16)
     k, v = [torch.randn(450, 2, 128, device=device, dtype=q.dtype) for _ in range(2)]
     actual = F.flash_attention_infer(q, k, v, cq, ck, 129, 257, causal=causal, implementation=implementation)
-    expected = F.flash_attention_infer(q, k, v, cq, ck, 129, 257, causal=causal, implementation="torch_reference")
+    expected = F.flash_attention_infer(q, k, v, cq, ck, 129, 257, causal=causal, implementation="torch")
     assert_close(actual, expected, q.dtype)
 
 
@@ -305,7 +335,7 @@ def test_flash_attention_infer(accuracy_backend, causal):
 @pytest.mark.accuracy
 def test_native_swa_infer(accuracy_backend, heads, interleave, window, lengths, case):
     implementation, _, device = accuracy_backend
-    if case != "default" and implementation == "torch_reference":
+    if case != "default" and implementation == "torch":
         pytest.skip("native launch contract")
     torch.manual_seed(42)
     (q, k, v, cq, ck), kwargs = make_native_swa_infer_case(device, heads, interleave, window, lengths)
@@ -328,30 +358,39 @@ def test_native_swa_infer(accuracy_backend, heads, interleave, window, lengths, 
             F.native_swa_infer(*inputs, implementation=implementation, **kwargs)
         return
     actual = F.native_swa_infer(*inputs, implementation=implementation, **kwargs)
-    expected = F.native_swa_infer(*inputs, implementation="torch_reference", **kwargs)
+    expected = F.native_swa_infer(*inputs, implementation="torch", **kwargs)
     assert not actual.requires_grad
     assert_close(actual, expected, inputs[0].dtype)
 
 
 @pytest.mark.parametrize(
-    "op,output_f32",
+    "op,output_f32,q_tokens,k_tokens,q_heads,kv_heads,dtype,causal",
     [
-        pytest.param(op, output_f32, marks=pytest.mark.api("functions." + op))
-        for op, output_f32 in [("flash_attention", None), ("swa", False), ("swa", True)]
+        pytest.param(op, f32, tq, tk, hq, hk, dtype, causal, marks=pytest.mark.api("functions." + op))
+        for op, f32, tq, tk, hq, hk, dtype, causal in [
+            ("flash_attention", None, 129, 257, 8, 1, torch.float16, False),
+            ("flash_attention", None, 129, 257, 8, 1, torch.float16, True),
+            ("flash_attention", None, 129, 257, 8, 1, torch.bfloat16, False),
+            ("flash_attention", None, 129, 257, 8, 1, torch.bfloat16, True),
+            ("swa", False, 129, 257, 8, 1, torch.bfloat16, True),
+            ("swa", True, 129, 257, 8, 1, torch.bfloat16, True),
+            ("flash_attention", None, 1024, 1024, 48, 8, torch.bfloat16, True),
+            ("flash_attention", None, 1024, 1024, 56, 8, torch.bfloat16, True),
+        ]
     ],
 )
 @pytest.mark.bitwise
-def test_attention_bitwise(accuracy_backend, op, output_f32):
+def test_attention_bitwise(accuracy_backend, op, output_f32, q_tokens, k_tokens, q_heads, kv_heads, dtype, causal):
     implementation, _, device = accuracy_backend
     inputs = tuple(
-        torch.randn(tokens, heads, 128, device=device, dtype=torch.bfloat16, requires_grad=True)
-        for tokens, heads in ((129, 8), (257, 1), (257, 1))
+        torch.randn(tokens, heads, 128, device=device, dtype=dtype, requires_grad=True)
+        for tokens, heads in ((q_tokens, q_heads), (k_tokens, kv_heads), (k_tokens, kv_heads))
     )
-    cq, ck = (torch.tensor([0, n], device=device, dtype=torch.int32) for n in (129, 257))
+    cq, ck = (torch.tensor([0, n], device=device, dtype=torch.int32) for n in (q_tokens, k_tokens))
     kwargs = (
-        dict(max_q_len=129, max_k_len=257, causal=True)
+        dict(max_q_len=q_tokens, max_k_len=k_tokens, causal=causal)
         if op.startswith("flash_attention")
-        else dict(is_causal=True, local_window_size=1023, global_window_size=4, output_f32=output_f32)
+        else dict(is_causal=causal, local_window_size=1023, global_window_size=4, output_f32=output_f32)
     )
     assert_repeatable(partial(getattr(F, op), implementation=implementation, **kwargs), (*inputs, cq, ck))
 
@@ -372,7 +411,7 @@ def test_swa_infer(
         softmax_scale=dim**-0.5,
     )
     actual = F.swa_infer(*inputs, implementation=implementation, **options)
-    expected = F.swa_infer(*inputs, implementation="torch_reference", **options)
+    expected = F.swa_infer(*inputs, implementation="torch", **options)
     assert not actual.requires_grad
     assert_swa_infer_close(actual, expected)
 
@@ -397,7 +436,7 @@ def test_swa(
     upstream = torch.randn_like(actual)
     actual_grads = torch.autograd.grad(actual, inputs, upstream)
     reference = clone_with_grad(inputs)
-    expected = F.swa(*reference, cq, ck, implementation="torch_reference", output_f32=True, **options)
+    expected = F.swa(*reference, cq, ck, implementation="torch", output_f32=True, **options)
     expected_grads = torch.autograd.grad(expected, reference, upstream)
     assert_mojo_close(actual, expected)
     for index, (actual_grad, expected_grad) in enumerate(zip(actual_grads, expected_grads)):
@@ -422,7 +461,7 @@ def test_swa_shapes_bitwise(
     local_window,
 ):
     implementation, _, device = accuracy_backend
-    if max_q > 8192 and (device != "npu" or implementation == "torch_reference"):
+    if max_q > 8192 and (device != "npu" or implementation == "torch"):
         pytest.skip("original long cases require an optimized NPU provider")
     inputs, cq, ck = make_attention_case(device, batch, q_heads, kv_heads, dim, max_q, max_cache, dtype)
     assert_repeatable(
@@ -491,12 +530,17 @@ def test_swa_infer_compile(accuracy_backend):
 
 
 @pytest.mark.accuracy
-@pytest.mark.api("functions.swa")
-@pytest.mark.parametrize("op,output_f32", [("swa", False), ("swa", True)])
+@pytest.mark.parametrize(
+    "op,output_f32",
+    [
+        pytest.param(op, f32, marks=pytest.mark.api("functions." + op))
+        for op, f32 in [("swa", False), ("swa", True), ("flash_attention", False)]
+    ],
+)
 def test_compiled_leaves(accuracy_backend, op, output_f32):
     implementation, target, device = accuracy_backend
-    if implementation not in (None, "triton") or not target.startswith("npu."):
-        pytest.skip("NPU Triton leaf decomposition contract")
+    if implementation not in (None, "triton", "torch_npu") or not target.startswith("npu."):
+        pytest.skip("NPU leaf decomposition contract")
     preload(op, implementation=implementation, target=target)
     nodes = {"forward": [], "backward": []}
 
@@ -512,10 +556,15 @@ def test_compiled_leaves(accuracy_backend, op, output_f32):
     inputs = tuple(torch.randn(128, h, 128, dtype=torch.bfloat16, device=device, requires_grad=True) for h in (4, 2, 2))
 
     def run(q, k, v):
+        if op == "flash_attention":
+            return F.flash_attention(q, k, v, cu, cu, 128, 128, causal=True, implementation=implementation)
         return F.swa(q, k, v, cu, cu, output_f32=output_f32, implementation=implementation)
 
     expected_forward = {"swa_fwd"}
     expected_backward = {"swa_preprocess", "swa_dkdv", "swa_dq"}
+    if op == "flash_attention" and implementation == "torch_npu":
+        expected_forward = {"flash_attention_fwd"}
+        expected_backward = {"flash_attention_bwd"}
     eager_inputs = tuple(t.detach().clone().requires_grad_() for t in inputs)
     try:
         compiled = compile_fullgraph(run, backend=backend)
@@ -643,3 +692,98 @@ def test_swa_mask_template_tiles(accuracy_backend, block_m, block_n, window, glo
     local = (k >= q - lw) if window is not None else torch.zeros_like(k <= q)
     expected = (k <= q) & ((k < gw) | local)
     assert_close(output.cpu(), expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    "op", [pytest.param(op, marks=pytest.mark.api("functions." + op)) for op in ("swa", "flash_attention")]
+)
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.accuracy
+def test_prebound(accuracy_backend, monkeypatch, op, compiled):
+    from mojo_opset.functions import attention
+    from mojo_opset.functions._dispatch import load_impl
+
+    impl, target, device = accuracy_backend
+    if compiled and impl == "torch":
+        pytest.skip("Torch attention reference uses eager variable-length loops")
+    forward, backward = load_impl(op, impl, target=target, require_backward=True)
+    function = attention.SwaFunction if op == "swa" else attention.FlashAttentionFunction
+    inputs = _make_attention_inputs(device, torch.bfloat16, 128, 4, 2)
+    cu = torch.tensor([0, 128], device=device, dtype=torch.int32)
+    options = (
+        (cu, cu, True, 63, 4, 128**-0.5, False, True, impl)
+        if op == "swa"
+        else (None, cu, cu, 128, 128, 0.0, 128**-0.5, True, True, impl)
+    )
+
+    class Fused(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, q, k, v, forward_kernel, backward_kernel, *args):
+            ctx.forward_kernel, ctx.backward_kernel = forward_kernel, backward_kernel
+            return function.forward(ctx, q, k, v, *args)
+
+        @staticmethod
+        def backward(ctx, grad):
+            grads = function.backward(ctx, grad)
+            return *grads[:3], None, None, *grads[3:]
+
+    # Bind the ordinary path first, then ensure fused calls cannot redispatch.
+    expected = function.apply(*inputs, *options)
+    upstream = torch.randn_like(expected)
+    expected_grads = torch.autograd.grad(expected, inputs, upstream)
+
+    def unexpected_dispatch(*args, **kwargs):
+        raise AssertionError("a prebound forward/backward pair must not redispatch")
+
+    def run(*xs):
+        return Fused.apply(*xs, forward, backward, *options)
+
+    monkeypatch.setattr(attention, "load_impl", unexpected_dispatch)
+    try:
+        call = compile_fullgraph(run) if compiled else run
+        actual = call(*inputs)
+        actual_grads = torch.autograd.grad(actual, inputs, upstream)
+        assert_close(actual, expected, torch.bfloat16, rtol=0, atol=0)
+        assert_close(actual_grads, expected_grads, torch.bfloat16, rtol=0, atol=0)
+        assert_repeatable(call, inputs)
+    finally:
+        torch._dynamo.reset()
+
+
+@pytest.mark.api("functions.flash_attention")
+@pytest.mark.accuracy
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("phase", ["forward", "backward"])
+@pytest.mark.parametrize("deterministic", [False, True])
+def test_flash_attention_runtime_policy(accuracy_backend, compiled, phase, deterministic):
+    implementation, target, device = accuracy_backend
+    if implementation != "torch_npu":
+        pytest.skip("torch_npu runtime determinism contract")
+    preload("flash_attention", implementation=implementation, target=target)
+    inputs = _make_attention_inputs(device, torch.bfloat16, 128)
+    cu = torch.tensor([0, 128], device=device, dtype=torch.int32)
+
+    def run(q, k, v):
+        return F.flash_attention(q, k, v, cu, cu, 128, 128, causal=True, implementation=implementation)
+
+    enabled = torch.are_deterministic_algorithms_enabled()
+    warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+    try:
+        # AOTAutograd forbids enabling determinism between a compiled forward
+        # and its backward. Warm under the stricter policy, then optionally relax it.
+        torch.use_deterministic_algorithms(True)
+        call = compile_fullgraph(run) if compiled else run
+        # Warm both graphs before changing the runtime policy.
+        torch.autograd.grad(call(*inputs).sum(), inputs)
+        output = call(*inputs) if phase == "backward" else None
+        torch.use_deterministic_algorithms(deterministic)
+        if phase == "forward":
+            output = call(*inputs)
+        grads = torch.autograd.grad(output.sum(), inputs)
+        assert torch.isfinite(output).all()
+        assert all(torch.isfinite(grad).all() for grad in grads)
+        assert torch.are_deterministic_algorithms_enabled() == deterministic
+        assert not torch.is_deterministic_algorithms_warn_only_enabled()
+    finally:
+        torch.use_deterministic_algorithms(enabled, warn_only=warn_only)
+        torch._dynamo.reset()

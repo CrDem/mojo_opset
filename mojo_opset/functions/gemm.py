@@ -1,20 +1,56 @@
-"""Forward-only grouped and quantized GEMMs from the original Mojo operators."""
+"""Trainable grouped GEMM and forward-only quantized GEMMs."""
 
 import torch
+
+from torch.autograd.function import once_differentiable
 
 from ._checks import _require_inference
 from ._dispatch import load_impl
 
 
-def group_gemm(input, weight, group_list, *, trans_weight=False, implementation=None):
-    """Multiply contiguous row groups by their respective [G, K, N] weights."""
+def _check_group_gemm(input, weight, group_list, trans_weight):
     if input.ndim != 2 or weight.ndim != 3 or group_list.ndim != 1:
         raise ValueError("expected input [M,K], weight [G,K,N], and group_list [G]")
     if weight.shape[0] != group_list.numel() or input.shape[1] != weight.shape[2 if trans_weight else 1]:
         raise ValueError("weight dimensions must match input and group_list")
-    _require_inference("group_gemm", input, weight)
-    forward, _ = load_impl("group_gemm", implementation)
-    return forward(input, weight, group_list, trans_weight)
+    if input.device != weight.device or input.dtype != weight.dtype:
+        raise ValueError("input and weight must share device and dtype")
+    if group_list.dtype not in (torch.int32, torch.int64):
+        raise ValueError("group_list must contain integer row counts")
+
+
+class GroupGemmFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, weight, group_list, trans_weight, implementation, require_backward=True):
+        _check_group_gemm(input, weight, group_list, trans_weight)
+        forward, ctx.backward_kernel = load_impl("group_gemm", implementation, require_backward=require_backward)
+        ctx.save_for_backward(input, weight, group_list)
+        ctx.trans_weight = trans_weight
+        return forward(input, weight, group_list, trans_weight)
+
+    @staticmethod
+    @once_differentiable
+    def backward(ctx, grad):
+        input, weight, group_list = ctx.saved_tensors
+        dx, dw = ctx.backward_kernel(grad, input, weight, group_list, ctx.trans_weight, *ctx.needs_input_grad[:2])
+        return dx, dw, None, None, None, None
+
+
+def group_gemm(input, weight, group_list, *, trans_weight=False, implementation=None):
+    """Multiply row groups by [G,K,N] weights, or [G,N,K] when transposed.
+
+    group_list contains nonnegative row counts summing to M. Training uses
+    the selected backend's backward; inference requires only its forward.
+    Input and weight gradients are supported when the backend declares them.
+    """
+    return GroupGemmFunction.apply(
+        input,
+        weight,
+        group_list,
+        trans_weight,
+        implementation,
+        torch.is_grad_enabled() and (input.requires_grad or weight.requires_grad),
+    )
 
 
 def quant_gemm(

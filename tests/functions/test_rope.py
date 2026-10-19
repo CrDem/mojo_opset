@@ -6,6 +6,7 @@ import torch
 from mojo_opset import functions as F
 from mojo_opset import preload
 from tests._checks import assert_accuracy
+from tests._checks import assert_close
 from tests._checks import assert_mojo_close
 from tests._checks import assert_repeatable
 from tests._checks import clone_with_grad
@@ -34,6 +35,10 @@ ROPE_CASES = [
         (2, 1, False),
     ]
     for dim, rotary_dim in [(128, 128), (88, 88), (128, 48)]
+] + [
+    # Real head counts and rotary width; T=1024 is a single-card CI truncation.
+    pytest.param(1, 1024, 48, 8, False, 128, 48, id="h48-kv8-t1024-r48"),
+    pytest.param(1, 1024, 56, 8, False, 128, 48, id="h56-kv8-t1024-r48"),
 ]
 
 
@@ -51,6 +56,18 @@ def make_rope_case(device, dtype, batch, tokens, q_heads, k_heads, head_first, d
         for heads in (q_heads, k_heads)
     )
     return inputs, angles.cos(), angles.sin()
+
+
+def rope_reference(q, k, cos, sin, unsqueeze_dim):
+    def rotate(x):
+        prefix = x.shape[-1] - cos.shape[-1]
+        values = x[..., prefix:].float()
+        first, second = values.chunk(2, dim=-1)
+        output = values * cos.float().unsqueeze(unsqueeze_dim)
+        output = output + torch.cat((-second, first), dim=-1) * sin.float().unsqueeze(unsqueeze_dim)
+        return torch.cat((x[..., :prefix], output.to(x.dtype)), dim=-1)
+
+    return rotate(q), rotate(k)
 
 
 @pytest.mark.api("functions.rope")
@@ -76,21 +93,26 @@ def test_rope_strides(accuracy_backend, q_transposed, k_transposed):
 @pytest.mark.api("functions.rope")
 @pytest.mark.parametrize("head_first", [False, True])
 @pytest.mark.parametrize("rotary_dim", [48, 88])
+@pytest.mark.parametrize("table_dtype", [torch.bfloat16, torch.float32])
 @pytest.mark.accuracy
-def test_rope_layout(accuracy_backend, head_first, rotary_dim):
+def test_rope_layout(accuracy_backend, head_first, rotary_dim, table_dtype):
     device = accuracy_backend[2]
     angles = torch.randn(9, rotary_dim // 2, device=device)
     angles = torch.cat((angles, angles), -1)
-    cos, sin = angles.cos().bfloat16(), angles.sin().bfloat16()
+    cos, sin = angles.cos().to(table_dtype), angles.sin().to(table_dtype)
     shapes = [(2, h, 9, 88) if head_first else (2, 9, h, 88) for h in (4, 2)]
 
-    def run(q, k, **selection):
-        return F.rope(q, k, cos, sin, unsqueeze_dim=0 if head_first else 1, **selection)
-
-    assert_accuracy(
-        run,
-        tuple(torch.randn(shape, device=device, dtype=torch.bfloat16) for shape in shapes),
-        implementation=accuracy_backend[0],
+    inputs = tuple(torch.randn(shape, device=device, dtype=torch.bfloat16, requires_grad=True) for shape in shapes)
+    reference_inputs = clone_with_grad(inputs)
+    unsqueeze_dim = 0 if head_first else 1
+    actual = F.rope(*inputs, cos, sin, unsqueeze_dim=unsqueeze_dim, implementation=accuracy_backend[0])
+    expected = rope_reference(*reference_inputs, cos, sin, unsqueeze_dim)
+    upstream = tuple(torch.randn_like(t) for t in actual)
+    assert_close(actual, expected, torch.bfloat16)
+    assert_close(
+        torch.autograd.grad(actual, inputs, upstream),
+        torch.autograd.grad(expected, reference_inputs, upstream),
+        torch.bfloat16,
     )
 
 
@@ -134,9 +156,8 @@ def test_rope(accuracy_backend, batch, tokens, q_heads, k_heads, head_first, dim
     inputs, cos, sin = make_rope_case(device, dtype, batch, tokens, q_heads, k_heads, head_first, dim, rotary_dim)
     reference_inputs = clone_with_grad(inputs)
     actual = F.rope(*inputs, cos, sin, unsqueeze_dim=0 if head_first else 1, implementation=implementation)
-    expected = F.rope(
-        *reference_inputs, cos, sin, unsqueeze_dim=0 if head_first else 1, implementation="torch_reference"
-    )
+    expected = rope_reference(*reference_inputs, cos, sin, 0 if head_first else 1)
+    assert tuple(t.dtype for t in actual) == tuple(t.dtype for t in inputs)
     upstream = tuple(torch.rand_like(output) for output in actual)
     actual_grads = torch.autograd.grad(actual, inputs, upstream)
     expected_grads = torch.autograd.grad(expected, reference_inputs, upstream)
@@ -190,7 +211,7 @@ def test_compiled_layout(accuracy_backend, op, backend):
         assert captured_metadata == metadata
         assert all(y.is_contiguous() for y in actual)
         assert captured_metadata == tuple((y.stride(), y.is_contiguous()) for y in actual)
-        reference = getattr(F, op)(*inputs, **kwargs, implementation="torch_reference")
+        reference = getattr(F, op)(*inputs, **kwargs, implementation="torch")
         reference = reference if isinstance(reference, tuple) else (reference,)
         for y, expected in zip(actual, reference):
             torch.testing.assert_close(y, expected, rtol=2e-2, atol=2e-2)

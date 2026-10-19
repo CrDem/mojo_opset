@@ -35,7 +35,7 @@ def grouped_launch_diagonal(pid, num_pid_m, num_pid_n, BLOCK_TRESHHOLD: tl.const
     return task_m_idx, task_n_idx
 
 
-def get_autotune_config():  
+def get_autotune_config():
     return [
         triton.Config({"BLOCK_M": 128, "BLOCK_N": 256, "BLOCK_K": 128, "BLOCK_TRESHHOLD": 4}),
         triton.Config({"BLOCK_M": 128, "BLOCK_N": 256, "BLOCK_K": 128, "BLOCK_TRESHHOLD": 5}),
@@ -103,14 +103,14 @@ def _m_grouped_matmul_bKmajor_kernel(
                     mask=msk_m[:, None] and (offs_k[None, :] < K - k * BLOCK_K),
                     other=0.0,
                 )
-                #tl.extra.cann.extension.compile_hint(a, "dot_pad_only_k")
+                # tl.extra.cann.extension.compile_hint(a, "dot_pad_only_k")
                 b = tl.load(
                     b_ptrs,
                     mask=msk_n[:, None] and (offs_k[None, :] < (K - k * BLOCK_K)),
                     other=0.0,
                 )
                 b = tl.trans(b)
-                #tl.extra.cann.extension.compile_hint(b, "dot_pad_only_k")
+                # tl.extra.cann.extension.compile_hint(b, "dot_pad_only_k")
                 accumulator = tl.dot(a, b, acc=accumulator)
 
             c = accumulator.to(C.dtype.element_ty)
@@ -178,13 +178,13 @@ def _m_grouped_matmul_bNmajor_kernel(
                     mask=msk_m[:, None] and (offs_ak[None, :] < K - k * BLOCK_K),
                     other=0.0,
                 )
-                #tl.extra.cann.extension.compile_hint(a, "dot_pad_only_k")
+                # tl.extra.cann.extension.compile_hint(a, "dot_pad_only_k")
                 b = tl.load(
                     b_ptrs,
                     mask=(offs_bk[:, None] < (group_idx * K + K - k * BLOCK_K)) and msk_n[None, :],
                     other=0.0,
                 )
-                #tl.extra.cann.extension.compile_hint(b, "dot_pad_only_k")
+                # tl.extra.cann.extension.compile_hint(b, "dot_pad_only_k")
                 accumulator = tl.dot(a, b, acc=accumulator)
 
             c = accumulator.to(C.dtype.element_ty)
@@ -213,18 +213,7 @@ def m_grouped_matmul_impl(
     num_cores = get_num_cores("cube")
     m_grouped_matmul_kernel = _m_grouped_matmul_bKmajor_kernel if not trans_b else _m_grouped_matmul_bNmajor_kernel
     m_grouped_matmul_kernel[(num_cores,)](
-        A,
-        B,
-        C,
-        size_per_group,
-        num_groups,
-        M,
-        N,
-        K,
-        strideBN,
-        strideBK,
-        multibuffer=True,
-        sync_solver=False
+        A, B, C, size_per_group, num_groups, M, N, K, strideBN, strideBK, multibuffer=True, sync_solver=False
     )
     return C
 
@@ -292,9 +281,9 @@ def _k_grouped_matmul_kernel(
                 b_ptrs = b_ptrs_base + kk * BLOCK_K * N
                 a = tl.load(a_ptrs, mask=(offs_k[:, None] < group_end - kk * BLOCK_K) and msk_m[None, :], other=0.0)
                 aa = tl.trans(a)
-                #tl.extra.cann.extension.compile_hint(aa, "dot_pad_only_k")
+                # tl.extra.cann.extension.compile_hint(aa, "dot_pad_only_k")
                 b = tl.load(b_ptrs, mask=(offs_k[:, None] < group_end - kk * BLOCK_K) and msk_n[None, :], other=0.0)
-                #tl.extra.cann.extension.compile_hint(b, "dot_pad_only_k")
+                # tl.extra.cann.extension.compile_hint(b, "dot_pad_only_k")
                 accumulator = tl.dot(aa, b, acc=accumulator)
 
             c = accumulator.to(C.dtype.element_ty)
@@ -302,7 +291,7 @@ def _k_grouped_matmul_kernel(
             offs_cn = task_n_idx * BLOCK_N + tl.arange(0, BLOCK_N)
             c_ptrs = C + offs_cm[:, None] * N + offs_cn[None, :]
             c_mask = (offs_cm[:, None] < (group_idx + 1) * M) and (offs_cn[None, :] < N)
-            tl.store(c_ptrs, c, mask=c_mask)
+            tl.store(c_ptrs, c, mask=c_mask & (tokens > 0))
             # matmul_end
             # cur_block = cur_block + total_cores
         last_count = cur_count % total_cores
@@ -320,27 +309,64 @@ def k_grouped_matmul_impl(
 ) -> torch.Tensor:
     num_cores = get_num_cores("cube")
 
-    def grid(META):
-        assert M % META["BLOCK_M"] == 0, "Only support when M is a multiple of BLOCK_M"
-        return (num_cores,)
-
-    _k_grouped_matmul_kernel[grid](A, B, C, size_per_group, num_groups, M, N, multibuffer=True,sync_solver=False)
+    _k_grouped_matmul_kernel[(num_cores,)](
+        A, B, C, size_per_group, num_groups, M, N, multibuffer=True, sync_solver=False
+    )
     return C
 
+
 @torch.library.custom_op("mojo_npu_triton_a2::group_gemm_fwd", mutates_args=())
-def group_gemm_fwd(input: torch.Tensor, weight: torch.Tensor, group_list: torch.Tensor,
-                   trans_weight: bool) -> torch.Tensor:
+def group_gemm_fwd(
+    input: torch.Tensor, weight: torch.Tensor, group_list: torch.Tensor, trans_weight: bool
+) -> torch.Tensor:
     # Both raw kernels address input as A[row * K + col].
     input = input.contiguous()
+    weight = weight.contiguous()
+    group_list = group_list.to(device=input.device).contiguous()
     m, k = input.shape
     n = weight.shape[1] if trans_weight else weight.shape[2]
-    stride_bn, stride_bk = ((weight.stride(1), weight.stride(2)) if trans_weight
-                            else (weight.stride(2), weight.stride(1)))
+    stride_bn, stride_bk = (
+        (weight.stride(1), weight.stride(2)) if trans_weight else (weight.stride(2), weight.stride(1))
+    )
     output = input.new_empty(m, n)
-    return m_grouped_matmul_impl(input, weight, output, group_list, weight.shape[0],
-                                m, n, k, stride_bn, stride_bk, not trans_weight)
+    if output.numel() == 0:
+        return output
+    return m_grouped_matmul_impl(
+        input, weight, output, group_list, weight.shape[0], m, n, k, stride_bn, stride_bk, not trans_weight
+    )
 
 
 @group_gemm_fwd.register_fake
 def _group_gemm_fake(input, weight, group_list, trans_weight):
     return input.new_empty(input.shape[0], weight.shape[1] if trans_weight else weight.shape[2])
+
+
+@torch.library.custom_op("mojo_npu_triton_a2::group_gemm_wgrad", mutates_args=())
+def _group_wgrad(grad: torch.Tensor, input: torch.Tensor, group_list: torch.Tensor) -> torch.Tensor:
+    # Empty reductions have no accumulator result on the NPU; keep their output zero.
+    dw = input.new_zeros((group_list.numel(), input.shape[1], grad.shape[1]))
+    if input.shape[0] == 0:
+        return dw
+    # Each output tile accumulates its entire group in FP32, without atomics.
+    return k_grouped_matmul_impl(
+        input.contiguous(),
+        grad.contiguous(),
+        dw,
+        group_list.to(device=input.device).contiguous(),
+        group_list.numel(),
+        input.shape[1],
+        grad.shape[1],
+    )
+
+
+@_group_wgrad.register_fake
+def _group_wgrad_fake(grad, input, group_list):
+    return input.new_empty((group_list.numel(), input.shape[1], grad.shape[1]))
+
+
+def group_gemm_bwd(grad, input, weight, group_list, trans_weight, need_input, need_weight):
+    dx = group_gemm_fwd(grad, weight, group_list, not trans_weight) if need_input else None
+    dw = _group_wgrad(grad, input, group_list) if need_weight else None
+    if dw is not None and trans_weight:
+        dw = dw.transpose(1, 2).contiguous()
+    return dx, dw

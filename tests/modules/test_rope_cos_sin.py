@@ -48,8 +48,8 @@ def test_rotary(accuracy_backend, case):
     implementation, _, device = accuracy_backend
     x, options = make_rotary_case(case, device)
     actual = _rotary(case[1], device, implementation)(x, **options)
-    expected = _rotary(case[1], device, "torch_reference")(x, **options)
-    dynamic = _rotary(case[1], device, "torch_reference", cached=False)(x, **options)
+    expected = _rotary(case[1], device, "torch")(x, **options)
+    dynamic = _rotary(case[1], device, "torch", cached=False)(x, **options)
     assert_close(actual, expected, rtol=1e-5, atol=1e-5)
     assert_close(expected, dynamic, rtol=1e-5, atol=1e-5)
 
@@ -65,6 +65,6 @@ def test_vision(accuracy_backend, grid):
     )
     actual = table(grid_hw)
     expected = modules.VisionRoPECosSin2D(
-        rope_dim=64, adapooling_factor=2, device=device, implementation="torch_reference"
+        rope_dim=64, adapooling_factor=2, device=device, implementation="torch"
     )(grid_hw)
     assert_close(actual, expected, rtol=1e-5, atol=1e-5)

@@ -42,7 +42,7 @@ npu.a2:
   rope: triton
   rope_cos_sin: triton
   rope_infer: triton
-  rotate_activation: torch_reference
+  rotate_activation: torch
   sdpa_infer: triton
   silu: triton
   static_quant: triton

@@ -6,38 +6,31 @@ from tests.performance._workload import training
 
 
 @pytest.mark.parametrize(
-    "op",
+    "op,shape,scaled",
     [
-        pytest.param(
-            op,
-            marks=pytest.mark.api(
-                "functions." + op,
-                ops=[op],
-            ),
-        )
-        for op in ["silu", "gelu"]
+        pytest.param(op, shape, scaled, marks=pytest.mark.api("functions." + op, ops=[op]))
+        for op, shape in [
+            *[(op, shape) for op in ("silu", "gelu") for shape in ((128, 1024), (1024, 4096))],
+            # Real expert widths; 1024 CI tokens * top-8 routes.
+            ("swiglu", (8192, 1536)),
+            ("swiglu", (8192, 2048)),
+        ]
+        for scaled in ([False, True] if op == "swiglu" else [False])
     ],
 )
-@pytest.mark.parametrize("shape", [(128, 1024), (1024, 4096)], ids=["small", "large"])
 @pytest.mark.parametrize("phase", ["forward", "backward", "forward_backward"])
-def test_activation(benchmark, perf_environment, op, shape, phase):
+def test_activation(benchmark, perf_environment, op, shape, phase, scaled):
     _, device, _, implementation = perf_environment
     function = getattr(functions, op)
 
     def factory():
         x = torch.randn(shape, device=device, dtype=torch.bfloat16, requires_grad=phase != "forward")
-        grad = torch.randn_like(x) if phase != "forward" else None
-        saved_output = function(x, implementation=implementation) if phase == "backward" else None
+        inputs = (x, torch.randn_like(x, requires_grad=phase != "forward")) if op == "swiglu" else (x,)
+        if scaled:
+            inputs += (torch.randn(shape[:-1], device=device, dtype=torch.float32, requires_grad=phase != "forward"),)
+        return training(lambda: function(*inputs, implementation=implementation), inputs, phase)
 
-        def run():
-            output = saved_output if phase == "backward" else function(x, implementation=implementation)
-            if phase != "forward":
-                return torch.autograd.grad(output, x, grad_outputs=grad, retain_graph=phase == "backward")
-            return output
-
-        return run
-
-    benchmark(factory=factory, op=op, shape=list(shape), dtype="bfloat16", phase=phase)
+    benchmark(factory=factory, op=op, shape=list(shape), dtype="bfloat16", phase=phase, scaled=scaled)
 
 
 # Original Mojo perf + perf_new function matrices; keep dtype/distribution distinct.

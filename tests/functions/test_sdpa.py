@@ -47,7 +47,7 @@ def test_sdpa(accuracy_backend, case):
     args = make_sdpa_case(case, device)
     opts = dict(scale=case[3] ** -0.5, enable_gqa=True)
     actual = F.sdpa_infer(*args, implementation=impl, **opts)
-    expected = F.sdpa_infer(*args, implementation="torch_reference", **opts)
+    expected = F.sdpa_infer(*args, implementation="torch", **opts)
     assert_close(actual, expected, args[0].dtype)
 
 
@@ -59,7 +59,7 @@ def test_diffusion(accuracy_backend, shape):
     device = accuracy_backend[2]
     inputs = tuple(torch.randn(b, h, length, d, device=device, dtype=torch.bfloat16) for h in (hq, hk, hk))
     mask = generate_diffusion_attention_mask(length // 2, 32).to(device)
-    if length % 512 and accuracy_backend[0] != "torch_reference":
+    if length % 512 and accuracy_backend[0] != "torch":
         with pytest.raises(NotImplementedError, match="divisible by 512"):
             F.diffusion_attention(*inputs, mask, scale=d**-0.5, enable_gqa=True, implementation=accuracy_backend[0])
         return
@@ -80,7 +80,7 @@ def test_diffusion_bitwise(accuracy_backend, shape):
         torch.randn(b, h, length, d, device=device, dtype=torch.bfloat16, requires_grad=True) for h in (hq, hk, hk)
     )
     mask = generate_diffusion_attention_mask(length // 2, 32).to(device)
-    if length % 512 and accuracy_backend[0] != "torch_reference":
+    if length % 512 and accuracy_backend[0] != "torch":
         with pytest.raises(NotImplementedError, match="divisible by 512"):
             F.diffusion_attention(*inputs, mask, scale=d**-0.5, enable_gqa=True, implementation=accuracy_backend[0])
         return

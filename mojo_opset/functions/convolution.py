@@ -57,6 +57,20 @@ class CausalConv1dFunction(torch.autograd.Function):
         cu_seqlens,
         implementation,
     ):
+        if x.ndim != 3 or weight.ndim != 2 or x.shape[-1] != weight.shape[0]:
+            raise ValueError("x must be [batch, time, channels] and weight must be [channels, width]")
+        if activation not in {None, "silu", "swish"}:
+            raise ValueError("activation must be None, 'silu', or 'swish'")
+        if weight.shape[1] < 1:
+            raise ValueError("convolution width must be positive")
+        batches = x.shape[0] if cu_seqlens is None else cu_seqlens.numel() - 1
+        if initial_state is not None and initial_state.shape != (batches, x.shape[-1], weight.shape[1] - 1):
+            raise ValueError("initial_state must have shape [batch, channels, width - 1]")
+        if cu_seqlens is not None and (cu_seqlens.ndim != 1 or x.shape[0] != 1):
+            raise ValueError("varlen inputs require x [1, tokens, channels] and 1D cu_seqlens")
+        if residual is not None and residual.shape != x.shape:
+            raise ValueError("residual must have the same shape as x")
+        output_final_state = bool(output_final_state)
         forward, backward = load_impl("causal_conv1d", implementation, require_backward=True)
         output, final_state = forward(
             x,
@@ -120,26 +134,13 @@ def causal_conv1d(
 ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
     """Depthwise causal convolution over ``[batch, time, channels]`` inputs."""
 
-    if x.ndim != 3 or weight.ndim != 2 or x.shape[-1] != weight.shape[0]:
-        raise ValueError("x must be [batch, time, channels] and weight must be [channels, width]")
-    if activation not in {None, "silu", "swish"}:
-        raise ValueError("activation must be None, 'silu', or 'swish'")
-    if weight.shape[1] < 1:
-        raise ValueError("convolution width must be positive")
-    batches = x.shape[0] if cu_seqlens is None else cu_seqlens.numel() - 1
-    if initial_state is not None and initial_state.shape != (batches, x.shape[-1], weight.shape[1] - 1):
-        raise ValueError("initial_state must have shape [batch, channels, width - 1]")
-    if cu_seqlens is not None and (cu_seqlens.ndim != 1 or x.shape[0] != 1):
-        raise ValueError("varlen inputs require x [1, tokens, channels] and 1D cu_seqlens")
-    if residual is not None and residual.shape != x.shape:
-        raise ValueError("residual must have the same shape as x")
     return CausalConv1dFunction.apply(
         x,
         weight,
         bias,
         residual,
         initial_state,
-        bool(output_final_state),
+        output_final_state,
         activation,
         cu_seqlens,
         implementation,

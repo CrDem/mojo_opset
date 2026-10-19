@@ -4,52 +4,69 @@ import pytest
 import torch
 
 from mojo_opset import modules
+from mojo_opset.functions._dispatch import load_impl
+from tests.performance._workload import training
 
 
 @pytest.mark.api("modules.GroupGemm", ops=["group_gemm"])
 @pytest.mark.parametrize(
-    "groups,tokens,k,n,trans_weight,distribution",
+    "groups,rows,k,n,trans_weight,distribution",
     [
-        (2, 32, 128, 128, False, "uniform"),
-        (8, 2560, 4096, 4096, False, "uniform"),
-        (8, 2560, 4096, 4096, False, "random"),
-        (4, 1024, 2048, 1024, False, "random"),
-        (6, 512, 1024, 2048, True, "random"),
+        (2, 64, 128, 128, False, "uniform"),
+        (8, 20480, 4096, 4096, False, "uniform"),
+        (8, 20480, 4096, 4096, False, "random"),
+        (4, 4096, 2048, 1024, False, "random"),
+        (6, 3072, 1024, 2048, True, "random"),
         (1, 256, 128, 64, False, "uniform"),
-        (4, 48, 64, 96, False, "uneven"),
-        (4, 64, 128, 96, True, "uneven"),
+        (4, 192, 64, 96, False, "uneven"),
+        (4, 256, 128, 96, True, "uneven"),
+        (129, 2048, 128, 96, False, "empty"),
+        (129, 2048, 128, 96, True, "empty"),
+        # 384 experts / EP8 = 48, 1024 CI tokens * top-8 = 8192 rows.
+        *[(48, 8192, k, n, True, "empty") for k, n in [(5120, 3072), (1536, 5120), (7168, 4096), (2048, 7168)]],
     ],
 )
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_group_gemm(benchmark, perf_environment, groups, tokens, k, n, trans_weight, distribution, dtype):
-    _, device, _, implementation = perf_environment
-    counts = [tokens] * groups
+@pytest.mark.parametrize("phase", ["forward", "backward", "forward_backward"])
+def test_group_gemm(benchmark, perf_environment, groups, rows, k, n, trans_weight, distribution, dtype, phase):
+    _, device, target, implementation = perf_environment
+    backward = phase != "forward"
+    if backward and load_impl("group_gemm", implementation, target=target)[1] is None:
+        pytest.skip("group_gemm backward is not implemented by this backend")
+    counts = [rows // groups] * groups
+    counts[-1] += rows - sum(counts)
     if distribution == "random":
         rng = random.Random(42)
-        values = [rng.randint(0, 2 * tokens) for _ in range(groups)]
-        counts = [int(value * groups * tokens / sum(values)) for value in values]
-        counts[-1] += groups * tokens - sum(counts)
+        values = [rng.randint(0, 2 * rows // groups) for _ in range(groups)]
+        counts = [int(value * rows / sum(values)) for value in values]
+        counts[-1] += rows - sum(counts)
     elif distribution == "uneven":
         counts = [48, 80, 64, 64] if trans_weight else [16, 64, 32, 80]
 
+    if distribution == "empty":
+        counts = [0] + [rows // (groups - 1)] * (groups - 1)
+        counts[-1] += rows - sum(counts)
+
     def factory():
-        weight = torch.randn((groups, n, k) if trans_weight else (groups, k, n), dtype=dtype, device=device)
+        weight = torch.randn(
+            (groups, n, k) if trans_weight else (groups, k, n), dtype=dtype, device=device, requires_grad=backward
+        )
         module = modules.GroupGemm(weight, trans_weight=trans_weight, implementation=implementation)
-        x = torch.randn(groups * tokens, k, dtype=dtype, device=device)
+        x = torch.randn(rows, k, dtype=dtype, device=device, requires_grad=backward)
         group_sizes = torch.tensor(counts, dtype=torch.int32, device=device)
-        return lambda: module(x, group_sizes)
+        return training(lambda: module(x, group_sizes), (x, weight), phase)
 
     benchmark(
         factory=factory,
         op="group_gemm",
         groups=groups,
-        tokens=tokens,
+        rows=rows,
         k=k,
         n=n,
         trans_weight=trans_weight,
         distribution=distribution,
         dtype=str(dtype),
-        phase="forward",
+        phase=phase,
     )
 
 
@@ -103,7 +120,7 @@ def test_quant_gemm(benchmark, perf_environment, m, k, n, distribution):
 @pytest.mark.parametrize("batch,m,k,n", [(8, 512, 128, 256), (4, 1024, 128, 512)])
 def test_quant_batch_gemm_reduce_sum(benchmark, perf_environment, batch, m, k, n):
     _, device, _, implementation = perf_environment
-    if implementation != "torch_reference":
+    if implementation != "torch":
         pytest.skip("Original master NPU quantized batch reduction is disabled")
 
     def factory():

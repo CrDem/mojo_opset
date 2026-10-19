@@ -43,7 +43,18 @@ class SwaFunction(torch.autograd.Function):
         output_f32,
         implementation,
     ):
-        forward, backward = load_impl("swa", implementation, require_backward=True)
+        _validate_inputs(q, k, v, cu_q_lens, cu_k_lens)
+        softmax_scale = q.shape[-1] ** -0.5 if softmax_scale is None else float(softmax_scale)
+        is_causal, gqa_interleave, output_f32 = bool(is_causal), bool(gqa_interleave), bool(output_f32)
+        # Fused callers must reuse both wrappers from one load_impl binding.
+        if hasattr(ctx, "forward_kernel") or hasattr(ctx, "backward_kernel"):
+            forward = getattr(ctx, "forward_kernel", None)
+            backward = getattr(ctx, "backward_kernel", None)
+            if not callable(forward) or not callable(backward):
+                raise ValueError("Prebound forward_kernel and backward_kernel must both be callable")
+        else:
+            forward, backward = load_impl("swa", implementation, require_backward=True)
+        ctx.forward_kernel, ctx.backward_kernel = forward, backward
         output, softmax_lse, output_cache = forward(
             q,
             k,
@@ -57,7 +68,6 @@ class SwaFunction(torch.autograd.Function):
             gqa_interleave,
             output_f32,
         )
-        ctx.backward_kernel = backward
         ctx.is_causal = is_causal
         ctx.local_window_size = local_window_size
         ctx.global_window_size = global_window_size
@@ -106,8 +116,20 @@ class FlashAttentionFunction(torch.autograd.Function):
         deterministic,
         implementation,
     ):
-        forward, backward = load_impl("flash_attention", implementation, require_backward=True)
-        output, softmax_lse, output_f32 = forward(
+        _validate_inputs(q, k, v, cu_q_lens, cu_k_lens)
+        softmax_scale = q.shape[-1] ** -0.5 if softmax_scale is None else float(softmax_scale)
+        max_q_len, max_k_len = int(max_q_len), int(max_k_len)
+        dropout_p, causal, deterministic = float(dropout_p), bool(causal), bool(deterministic)
+        # Fused callers must reuse both wrappers from one load_impl binding.
+        if hasattr(ctx, "forward_kernel") or hasattr(ctx, "backward_kernel"):
+            forward = getattr(ctx, "forward_kernel", None)
+            backward = getattr(ctx, "backward_kernel", None)
+            if not callable(forward) or not callable(backward):
+                raise ValueError("Prebound forward_kernel and backward_kernel must both be callable")
+        else:
+            forward, backward = load_impl("flash_attention", implementation, require_backward=True)
+        ctx.forward_kernel, ctx.backward_kernel = forward, backward
+        output, *cache = forward(
             q,
             k,
             v,
@@ -121,7 +143,6 @@ class FlashAttentionFunction(torch.autograd.Function):
             causal,
             deterministic,
         )
-        ctx.backward_kernel = backward
         ctx.has_attention_mask = attention_mask is not None
         ctx.max_q_len = max_q_len
         ctx.max_k_len = max_k_len
@@ -129,25 +150,27 @@ class FlashAttentionFunction(torch.autograd.Function):
         ctx.softmax_scale = softmax_scale
         ctx.causal = causal
         ctx.deterministic = deterministic
-        saved = [q, k, v, output_f32, softmax_lse, cu_q_lens, cu_k_lens]
+        # Backend forward returns (output, *cache); backward receives the
+        # same cache tensors after attention_mask, in forward order.
+        saved = [q, k, v, cu_q_lens, cu_k_lens]
         if attention_mask is not None:
             saved.append(attention_mask)
-        ctx.save_for_backward(*saved)
+        ctx.save_for_backward(*saved, *cache)
         return output
 
     @staticmethod
     @once_differentiable
     def backward(ctx, grad_output):
-        q, k, v, output_f32, softmax_lse, cu_q_lens, cu_k_lens = ctx.saved_tensors[:7]
-        attention_mask = ctx.saved_tensors[7] if ctx.has_attention_mask else None
+        q, k, v, cu_q_lens, cu_k_lens = ctx.saved_tensors[:5]
+        attention_mask = ctx.saved_tensors[5] if ctx.has_attention_mask else None
+        cache = ctx.saved_tensors[6 if ctx.has_attention_mask else 5 :]
         grad_q, grad_k, grad_v = ctx.backward_kernel(
             grad_output.contiguous(),
             q,
             k,
             v,
             attention_mask,
-            output_f32,
-            softmax_lse,
+            *cache,
             cu_q_lens,
             cu_k_lens,
             ctx.max_q_len,
@@ -181,20 +204,18 @@ def swa(
     backward reuses the returned output. The return dtype always matches q.
     """
 
-    _validate_inputs(q, k, v, cu_q_lens, cu_k_lens)
-    scale = q.shape[-1] ** -0.5 if softmax_scale is None else float(softmax_scale)
     return SwaFunction.apply(
         q,
         k,
         v,
         cu_q_lens,
         cu_k_lens,
-        bool(is_causal),
+        is_causal,
         local_window_size,
         global_window_size,
-        scale,
-        bool(gqa_interleave),
-        bool(output_f32),
+        softmax_scale,
+        gqa_interleave,
+        output_f32,
         implementation,
     )
 
@@ -255,7 +276,7 @@ def native_swa_infer(
     """Temporary forward-only API for the original native packed TND SWA.
 
     Kept separate from swa() to preserve the native implementation's contract
-    and restrictions. Currently provided by native on 950PR and torch_reference.
+    and restrictions. Currently provided by native on 950PR and torch.
     This migration interface is not yet stable.
     Use swa_infer() for the original Mojo inference contract, or swa() to train.
     """
@@ -342,8 +363,6 @@ def flash_attention(
 ) -> torch.Tensor:
     """First-order packed variable-length flash attention in TND layout."""
 
-    _validate_inputs(q, k, v, cu_q_lens, cu_k_lens)
-    scale = q.shape[-1] ** -0.5 if softmax_scale is None else float(softmax_scale)
     return FlashAttentionFunction.apply(
         q,
         k,
@@ -351,12 +370,12 @@ def flash_attention(
         attention_mask,
         cu_q_lens,
         cu_k_lens,
-        int(max_q_len),
-        int(max_k_len),
-        float(dropout_p),
-        scale,
-        bool(causal),
-        bool(deterministic),
+        max_q_len,
+        max_k_len,
+        dropout_p,
+        softmax_scale,
+        causal,
+        deterministic,
         implementation,
     )
 

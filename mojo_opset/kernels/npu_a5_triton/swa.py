@@ -2281,13 +2281,15 @@ def _swa_bwd_dkdv_kernel(
 
 @triton.autotune(
     configs=[
-        triton.Config({"BLOCK_M": 128, "BLOCK_N": 128, "multibuffer": True,
+        triton.Config({"BLOCK_N": 128, "multibuffer": True,
                        "enable_dynamic_cv_pipeline": (
                            False if _private is not None and _private.disable_swa_dq_dynamic_cv_pipeline() else True
                        )}),
     ],
     key=["HEAD_DIM"],
 )
+# Noncausal dQ needs 288 KiB of UB with 128x128 tiles (only 248 KiB is available).
+@triton.heuristics({"BLOCK_M": lambda args: 128 if args["IS_CAUSAL"] else 64})
 # The packed batch size and [head, token] leading strides vary with the batch.
 @triton.jit(do_not_specialize=["bsz", "stride_delta_h", "stride_lse_h"])
 def _swa_bwd_dq_kernel(
@@ -2963,8 +2965,8 @@ def flash_attention_bwd(
     k: torch.Tensor,
     v: torch.Tensor,
     attention_mask: Optional[torch.Tensor],
-    output_f32: torch.Tensor,
     softmax_lse: torch.Tensor,
+    output_f32: torch.Tensor,
     cu_q_lens: torch.Tensor,
     cu_k_lens: torch.Tensor,
     max_q_len: int,

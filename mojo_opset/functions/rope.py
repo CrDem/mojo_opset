@@ -37,8 +37,10 @@ def rope(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Rotate Q/K using supplied cos/sin; partial RoPE rotates the suffix.
 
-    Returns rotated Q/K and supports their gradients. Tables are supplied by
-    the caller, optionally prepared with rope_cos_sin.
+    Returns rotated Q/K in their respective input dtypes and supports their
+    gradients. FP32 tables do not promote outputs. The Torch implementation
+    computes the rotation in FP32, then casts once to each input dtype.
+    Tables are not differentiable and may be prepared with rope_cos_sin.
     """
 
     return RoPEFunction.apply(q, k, cos, sin, unsqueeze_dim, implementation)

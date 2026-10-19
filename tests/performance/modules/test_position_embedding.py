@@ -27,7 +27,7 @@ def test_apply_rope(benchmark, perf_environment, batch, seq_len, q_heads, k_head
         module = modules.RoPEInfer(implementation=implementation)
         if layout == "transposed":
             embedding = modules.RoPECosSin(
-                rope_theta=10000.0, rope_dim=128, init_max_length=seq_len, implementation="torch_reference"
+                rope_theta=10000.0, rope_dim=128, init_max_length=seq_len, implementation="torch"
             ).to(device)
             x = torch.randn(batch, seq_len, q_heads * 128, device=device, dtype=dtype)
             cos, sin = embedding(x)
@@ -67,7 +67,7 @@ def test_vision_rope(benchmark, perf_environment, grid, dtype):
     def factory():
         module = modules.VisionRoPE2DInfer(implementation=implementation)
         embedding = modules.VisionRoPECosSin2D(
-            rope_theta=10000.0, rope_dim=64, adapooling_factor=2, implementation="torch_reference"
+            rope_theta=10000.0, rope_dim=64, adapooling_factor=2, implementation="torch"
         ).to(device)
         cos, sin = embedding(torch.tensor(grid, dtype=torch.int32, device=device))
         q, k = [torch.randn(sum(h * w for h, w in grid), 20, 64, dtype=dtype, device=device) for _ in range(2)]

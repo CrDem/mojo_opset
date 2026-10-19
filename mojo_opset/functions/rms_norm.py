@@ -10,6 +10,11 @@ from ._dispatch import load_impl
 class RmsNormFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, weight, eps, implementation):
+        if weight.dim() != 1:
+            raise ValueError("RMSNorm weight must be one-dimensional.")
+        if x.shape[-1] != weight.numel():
+            raise ValueError(f"RMSNorm weight has {weight.numel()} elements, expected {x.shape[-1]}.")
+        eps = float(eps)
         forward, backward = load_impl("rms_norm", implementation, require_backward=True)
         output, rstd = forward(x, weight, eps)
         ctx.backward_kernel = backward
@@ -33,8 +38,4 @@ def rms_norm(
 ) -> torch.Tensor:
     """RMS normalization with output dtype matching ``x``."""
 
-    if weight.dim() != 1:
-        raise ValueError("RMSNorm weight must be one-dimensional.")
-    if x.shape[-1] != weight.numel():
-        raise ValueError(f"RMSNorm weight has {weight.numel()} elements, expected {x.shape[-1]}.")
-    return RmsNormFunction.apply(x, weight, float(eps), implementation)
+    return RmsNormFunction.apply(x, weight, eps, implementation)

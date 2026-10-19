@@ -594,11 +594,12 @@ def causal_conv1d_states_fwd_kernel(
 
     b_x = tl.load(x + o_t * D + o_d[:, None], mask=(m_t & m_d[:, None]), other=0)
     if USE_INITIAL_STATE:
-        if T < BW:
-            o_c = W - (BW - T) + tl.arange(0, BW)
-            m_c = (o_c >= 0) & (o_c < W)
-            b_cache = tl.load(initial_state + i_n * D * W + o_d[:, None] * W + o_c, mask=m_d[:, None] & m_c, other=0)
-            b_x += b_cache
+        o_c = W - (BW - T) + tl.arange(0, BW)
+        m_c = (o_c >= 0) & (o_c < W)
+        b_cache = tl.load(initial_state + i_n * D * W + o_d[:, None] * W + o_c, mask=m_d[:, None] & m_c, other=0)
+        # Ascend 950 workaround: select history without a runtime T < BW branch
+        # that merges b_x across control flow. Current-token lanes keep b_x.
+        b_x = tl.where(m_t[None, :], b_x, b_cache)
 
     tl.store(final_state + i_n * D * W + o_d[:, None] * W + o_w, b_x, mask=m_d[:, None] & m_w)
 

@@ -42,5 +42,5 @@ def test_sdpa(accuracy_backend, case):
     impl, _, device = accuracy_backend
     args = make_sdpa_case(case, device)
     actual = modules.Sdpa(case[3] ** -0.5, True, implementation=impl)(*args)
-    expected = modules.Sdpa(case[3] ** -0.5, True, implementation="torch_reference")(*args)
+    expected = modules.Sdpa(case[3] ** -0.5, True, implementation="torch")(*args)
     assert_close(actual, expected, args[0].dtype)

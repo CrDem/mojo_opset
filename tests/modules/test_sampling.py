@@ -105,7 +105,7 @@ def test_sampling(accuracy_backend, name, shape, options):
     check_sampling(
         name,
         _sampler(name, options, implementation),
-        _sampler(name, options, "torch_reference"),
+        _sampler(name, options, "torch"),
         torch.randn(shape, device=device),
     )
 
@@ -123,7 +123,7 @@ def test_rejection(accuracy_backend, name, case):
     implementation, _, device = accuracy_backend
     inputs = make_rejection_case(name, case, device)
     actual = accepted_prefix(_sampler(name, {}, implementation)(*inputs, random_seed=42))
-    expected = accepted_prefix(_sampler(name, {}, "torch_reference")(*inputs, random_seed=42))
+    expected = accepted_prefix(_sampler(name, {}, "torch")(*inputs, random_seed=42))
     for a, e in zip(actual, expected):
         assert_close(a, e, rtol=0, atol=0)
 
@@ -135,5 +135,5 @@ def test_penalties(accuracy_backend, shape):
     implementation, _, device = accuracy_backend
     logits, options = make_penalty_case(shape, device)
     actual = modules.ApplyPenaltiesTemperature(implementation=implementation)(logits.clone(), *options)
-    expected = modules.ApplyPenaltiesTemperature(implementation="torch_reference")(logits.clone(), *options)
+    expected = modules.ApplyPenaltiesTemperature(implementation="torch")(logits.clone(), *options)
     assert_close(actual, expected, logits.dtype)

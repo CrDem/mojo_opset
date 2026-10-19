@@ -14,22 +14,71 @@ def group_gemm_fwd(
     input = input.contiguous()
     if trans_weight:
         weight = weight.transpose(1, 2).contiguous()
-    weights = [w.contiguous() for w in weight]
-    ends = [int(x) for x in group_list.cumsum(0).tolist()]
-    return torch.cat(
-        torch_npu.npu_grouped_matmul(
-            [input],
-            weights,
-            group_type=0,
-            group_list=ends,
-        ),
-        dim=0,
-    )
+    counts = group_list.to(device="cpu", dtype=torch.int64).tolist()
+    if any(size < 0 for size in counts) or sum(counts) != input.shape[0]:
+        raise ValueError("group_list must contain nonnegative row counts summing to M")
+    group_list = group_list.to(device=input.device, dtype=torch.int64)
+    outputs = []
+    token_start = 0
+    # CANN accepts at most 128 weight tensors per grouped matmul.
+    for start in range(0, len(counts), 128):
+        end = min(start + 128, len(counts))
+        token_end = token_start + sum(counts[start:end])
+        if token_end != token_start:
+            # With split_item=2, CANN treats a single weight as a stacked
+            # [groups, K, N] tensor, including a one-group final chunk.
+            chunk = weight[start:end]
+            weights = [chunk.contiguous()] if end - start == 1 else [w.contiguous() for w in chunk.unbind(0)]
+            outputs.extend(
+                torch_npu.npu_grouped_matmul(
+                    [input[token_start:token_end]],
+                    weights,
+                    group_list=group_list[start:end].cumsum(0),
+                    split_item=2,
+                    group_type=0,
+                )
+            )
+        token_start = token_end
+    return torch.cat(outputs, dim=0) if outputs else input.new_empty((0, weight.shape[-1]))
 
 
 @group_gemm_fwd.register_fake
 def _group_fake(input, weight, group_list, trans_weight):
     return input.new_empty((input.shape[0], weight.shape[1 if trans_weight else 2]))
+
+
+@torch.library.custom_op("mojo_npu_torch_npu::group_gemm_wgrad", mutates_args=())
+def _group_wgrad(dy: torch.Tensor, input: torch.Tensor, counts: torch.Tensor) -> torch.Tensor:
+    gradient = torch.zeros(
+        (counts.numel(), input.shape[-1], dy.shape[-1]),
+        device=input.device,
+        dtype=torch.float32,
+    )
+    if input.shape[0] == 0:
+        return gradient.to(input.dtype)
+    gradient = torch_npu.npu_grouped_matmul_add(
+        gradient,
+        input.contiguous(),
+        dy.contiguous(),
+        counts.to(device=input.device, dtype=torch.int64).cumsum(0),
+        transpose_x=True,
+        transpose_weight=False,
+        group_type=2,
+    )
+    return gradient.to(input.dtype)
+
+
+@_group_wgrad.register_fake
+def _group_wgrad_fake(dy, input, counts):
+    return input.new_empty((counts.numel(), input.shape[-1], dy.shape[-1]))
+
+
+def group_gemm_bwd(dy, input, weight, group_list, trans_weight, need_input, need_weight):
+    dx = group_gemm_fwd(dy.contiguous(), weight, group_list, not trans_weight) if need_input else None
+    dw = _group_wgrad(dy, input, group_list) if need_weight else None
+    if dw is not None and trans_weight:
+        dw = dw.transpose(-1, -2).contiguous()
+    return dx, dw
 
 
 @torch.library.custom_op("mojo_npu_torch_npu::quant_gemm", mutates_args=())

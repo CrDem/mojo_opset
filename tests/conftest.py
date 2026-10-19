@@ -6,6 +6,17 @@ import torch
 from mojo_opset.utils.target import detect_target
 
 
+@pytest.fixture(autouse=True)
+def deterministic_algorithms():
+    enabled = torch.are_deterministic_algorithms_enabled()
+    warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+    torch.use_deterministic_algorithms(True)
+    try:
+        yield
+    finally:
+        torch.use_deterministic_algorithms(enabled, warn_only=warn_only)
+
+
 def pytest_addoption(parser):
     group = parser.getgroup("mojo accuracy")
     group.addoption(

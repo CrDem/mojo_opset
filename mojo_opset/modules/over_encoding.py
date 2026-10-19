@@ -97,7 +97,7 @@ class NF4DequantEmbedding(torch.nn.Module):
             codebook=self.codebook,
             vocab_start_id=self.vocab_start_id,
             output_dtype=self.output_dtype,
-            implementation="torch_reference" if self.cpu_only else self.implementation,
+            implementation="torch" if self.cpu_only else self.implementation,
         )
 
 

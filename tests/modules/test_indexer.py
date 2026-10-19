@@ -36,5 +36,5 @@ def test_indexer(accuracy_backend, shape, dtype):
     implementation, _, device = accuracy_backend
     inputs = make_indexer_case(shape, dtype, device)
     actual = modules.LightningIndexer(implementation=implementation)(*inputs)
-    expected = modules.LightningIndexer(implementation="torch_reference")(*inputs)
+    expected = modules.LightningIndexer(implementation="torch")(*inputs)
     assert_lightning_scores(actual, expected)

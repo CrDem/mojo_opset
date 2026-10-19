@@ -28,7 +28,7 @@ def moe_case(case, dtype, device, impl):
     inv_smooth_scale = (torch.rand(len(counts), width, device=device) + 0.1).reciprocal()
     options = dict(inv_smooth_scale=inv_smooth_scale)
     call = partial(F.moe_dynamic_quant, **options, implementation=impl)
-    reference = partial(F.moe_dynamic_quant, **options, implementation="torch_reference")
+    reference = partial(F.moe_dynamic_quant, **options, implementation="torch")
     return (call, reference, (x, token_count))
 
 

@@ -30,7 +30,7 @@ def moe_case(case, dtype, device, impl):
     options = dict(inv_smooth_scale=inv_smooth_scale)
     call = M.MoEDynamicQuant(len(counts), width, implementation=impl, device=device)
     call.load_state_dict(options)
-    reference = partial(F.moe_dynamic_quant, **options, implementation="torch_reference")
+    reference = partial(F.moe_dynamic_quant, **options, implementation="torch")
     return (call, reference, (x, token_count))
 
 

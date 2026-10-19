@@ -88,7 +88,7 @@ def test_update(accuracy_backend, dtype, length, state_length, width, activation
             current, state, weight, bias, activation, implementation=implementation
         )
         expected = F.causal_conv1d_update_state_infer(
-            current, reference_state, weight, bias, activation, implementation="torch_reference"
+            current, reference_state, weight, bias, activation, implementation="torch"
         )
         assert_close(actual, expected, dtype)
         assert_close(state, reference_state, rtol=0, atol=0)
@@ -106,7 +106,7 @@ def test_update_master(accuracy_backend, b, t, d, w, activation):
     weight = torch.randn(d, w, device=device, dtype=x.dtype)
     actual = F.causal_conv1d_update_state_infer(x, state, weight, activation=activation, implementation=implementation)
     expected = F.causal_conv1d_update_state_infer(
-        x, reference_state, weight, activation=activation, implementation="torch_reference"
+        x, reference_state, weight, activation=activation, implementation="torch"
     )
     assert_mojo_close(actual, expected)
     assert_close(state, reference_state, rtol=0, atol=0)
@@ -186,7 +186,7 @@ def test_causal_conv1d(accuracy_backend, case):
         residual = optional.pop(0) if case[6] else None
         return F.causal_conv1d(x, weight, bias, residual=residual, implementation=selected, **options)[0]
 
-    expected = run(reference_inputs, "torch_reference")
+    expected = run(reference_inputs, "torch")
     actual = run(actual_inputs, implementation)
     expected_grads = torch.autograd.grad(expected, reference_inputs, grad_output)
     actual_grads = torch.autograd.grad(actual, actual_inputs, grad_output)
@@ -292,3 +292,33 @@ def test_update_compile(accuracy_backend):
             torch.testing.assert_close(state, eager_state, rtol=0, atol=0)
     finally:
         torch._dynamo.reset()
+
+
+@pytest.mark.api("functions.causal_conv1d")
+@pytest.mark.accuracy
+@pytest.mark.parametrize("lengths", [(1,), (3,), (7,), (1, 3, 7)])
+@pytest.mark.parametrize("with_history", [False, True])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_final_state_history(accuracy_backend, lengths, with_history, dtype):
+    implementation, _, device = accuracy_backend
+    channels, width = 17, 4
+    x = torch.randn(1, sum(lengths), channels, device=device, dtype=dtype)
+    weight = torch.randn(channels, width, device=device, dtype=dtype)
+    history = torch.randn(len(lengths), channels, width - 1, device=device, dtype=dtype)
+    offsets = [0]
+    for length in lengths:
+        offsets.append(offsets[-1] + length)
+    cu = torch.tensor(offsets, device=device, dtype=torch.int32) if len(lengths) > 1 else None
+    _, final = F.causal_conv1d(
+        x,
+        weight,
+        initial_state=history if with_history else None,
+        output_final_state=True,
+        cu_seqlens=cu,
+        implementation=implementation,
+    )
+    expected = []
+    for i, (start, end) in enumerate(zip(offsets, offsets[1:])):
+        prefix = history[i] if with_history else torch.zeros_like(history[i])
+        expected.append(torch.cat((prefix, x[0, start:end].T), dim=-1)[:, -(width - 1) :])
+    torch.testing.assert_close(final, torch.stack(expected), rtol=0, atol=0)

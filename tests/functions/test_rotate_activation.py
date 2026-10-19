@@ -14,7 +14,7 @@ ROTATE_SHAPES = [
 
 
 def _rotation(implementation):
-    if implementation not in (None, "torch_reference"):
+    if implementation not in (None, "torch"):
         pytest.skip("RotateActivation has only the explicit Torch reference provider")
     return lambda x: functions.rotate_activation(x, implementation=implementation)
 

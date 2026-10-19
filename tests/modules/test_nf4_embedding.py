@@ -58,7 +58,7 @@ def test_nf4(accuracy_backend, dim):
         *weights, group_size=64, output_dtype=torch.float32, implementation=implementation
     )(ids)
     expected = modules.NF4DequantEmbedding(
-        *weights, group_size=64, output_dtype=torch.float32, implementation="torch_reference"
+        *weights, group_size=64, output_dtype=torch.float32, implementation="torch"
     )(ids)
     assert_close(actual, expected, rtol=0, atol=1e-5)
 
@@ -69,7 +69,7 @@ def _encoding_modules(case, device, implementation):
     if case.startswith("cpu"):
         reference_options["mega_embedding_cpu_only"] = False
         reference_options["_mega_embedding_weight"] = options["_mega_embedding_weight"].to(device)
-    reference = modules.OverEncoding(*config, **reference_options, implementation="torch_reference").to(device)
+    reference = modules.OverEncoding(*config, **reference_options, implementation="torch").to(device)
     actual = modules.OverEncoding(*config, **options, implementation=implementation).to(device)
     with torch.no_grad():
         for part in reference.modules():

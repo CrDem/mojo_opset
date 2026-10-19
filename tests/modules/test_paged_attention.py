@@ -76,7 +76,7 @@ PREFILL_CASES = [(2, 16, 4, 128, 64), (1, 8, 1, 64, 128)]
 
 def paged_bucket_case(layout, device, impl):
     """Original varlen bucket: 4 real tokens in an 8-token, 6-batch allocation."""
-    if impl not in (None, "triton", "torch_reference"):
+    if impl not in (None, "triton", "torch"):
         pytest.skip("Original 16-token page bucket case has no optimized torch_npu implementation")
     query = torch.randn(8, 4, 128, dtype=torch.bfloat16, device=device)
     cu_q_lens = torch.tensor([0, 1, 2, 3, 4, 4, 4], dtype=torch.int32, device=device)
@@ -90,7 +90,7 @@ def paged_bucket_case(layout, device, impl):
     options = dict(cu_total_seq_lens=cu_q_lens.clone(), softmax_scale=128 ** (-0.5), max_q_len=1, max_total_seq_len=1)
     op = M.PagedPrefillGQAInfer(gqa_layout=layout, implementation=impl)
     op.prepare_metadata(cu_q_lens, options["cu_total_seq_lens"], 4, 2, 16)
-    reference = partial(F.paged_prefill_gqa_infer, gqa_layout=layout, implementation="torch_reference", **options)
+    reference = partial(F.paged_prefill_gqa_infer, gqa_layout=layout, implementation="torch", **options)
     return (partial(op, **options), reference, inputs)
 
 
@@ -236,13 +236,13 @@ def paged_case(spec, device, impl):
     op = getattr(M, module_name)(**config, implementation=impl)
     if name == "paged_prefill_gqa_infer":
         op.prepare_metadata(inputs[3], kwargs["cu_total_seq_lens"], qheads, kheads, page)
-    reference = partial(getattr(F, name), **config, implementation="torch_reference", **kwargs)
+    reference = partial(getattr(F, name), **config, implementation="torch", **kwargs)
     return (partial(op, **kwargs), reference, inputs, dtype)
 
 
 def prefill_case(case, layout, device, impl):
     batch, qheads, kheads, dim, length = case
-    if impl != "torch_reference" and dim % 128:
+    if impl != "torch" and dim % 128:
         pytest.skip("Original torch_npu fused attention requires head_dim divisible by 128")
     inputs = (
         torch.randn(batch, qheads, length, dim, device=device, dtype=torch.bfloat16),
@@ -251,7 +251,7 @@ def prefill_case(case, layout, device, impl):
         torch.arange(batch + 1, device=device, dtype=torch.int32) * length,
     )
     op = M.PrefillGQAInfer(gqa_layout=layout, implementation=impl)
-    reference = partial(F.prefill_gqa_infer, gqa_layout=layout, implementation="torch_reference")
+    reference = partial(F.prefill_gqa_infer, gqa_layout=layout, implementation="torch")
     return (op, reference, inputs)
 
 

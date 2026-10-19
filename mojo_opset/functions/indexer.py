@@ -66,8 +66,8 @@ def indexer(
     cos, sin = (torch.cat((part, part), dim=-1) for part in (freqs_cis.real, freqs_cis.imag))
     q, k = rope_infer(q, k, cos, sin, head_first=False, keep_cos_sin_dtype=True, implementation=implementation)
     # RotateActivation had no optimized NPU provider in master; select its Torch formula explicitly.
-    q = rotate_activation(q, implementation="torch_reference")
-    k = rotate_activation(k.squeeze(2), implementation="torch_reference")
+    q = rotate_activation(q, implementation="torch")
+    k = rotate_activation(k.squeeze(2), implementation="torch")
     q_quant, q_scale = dynamic_quant(q, implementation=implementation)
     k_quant, k_scale = dynamic_quant(k, implementation=implementation)
     q_scale = q_scale.squeeze(-1)

@@ -47,7 +47,7 @@ def swiglu_case(case, device, impl, *, activate_left=False, with_bias=False):
             quant_offset=quant_offset,
             token_count=token_count,
             **options,
-            implementation="torch_reference",
+            implementation="torch",
         )
 
     return (

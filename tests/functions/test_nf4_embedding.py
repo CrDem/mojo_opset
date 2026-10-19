@@ -50,7 +50,7 @@ def test_nf4(accuracy_backend, dim):
     inputs = make_nf4_case(dim, device)
     actual = F.embedding_nf4_dequant(*inputs, group_size=64, output_dtype=torch.float32, implementation=implementation)
     expected = F.embedding_nf4_dequant(
-        *inputs, group_size=64, output_dtype=torch.float32, implementation="torch_reference"
+        *inputs, group_size=64, output_dtype=torch.float32, implementation="torch"
     )
     assert_close(actual, expected, rtol=0, atol=1e-5)
 
@@ -79,5 +79,5 @@ def test_decode(accuracy_backend):
     implementation, _, device = accuracy_backend
     inputs, options = _decode_case(device)
     actual = F.over_encoding_decode(*inputs, **options, implementation=implementation)
-    expected = F.over_encoding_decode(*inputs, **options, implementation="torch_reference")
+    expected = F.over_encoding_decode(*inputs, **options, implementation="torch")
     assert_close(actual, expected, rtol=1e-5, atol=1e-5)

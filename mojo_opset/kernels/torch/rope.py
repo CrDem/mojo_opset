@@ -1,3 +1,5 @@
+"""Half-split RoPE with FP32 arithmetic and input-dtype outputs/gradients."""
+
 import torch
 
 def _rotate_half(x: torch.Tensor) -> torch.Tensor:

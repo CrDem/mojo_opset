@@ -353,8 +353,10 @@ def _dense_attention_forward(
     lse_parts = []
     for q_start, q_end, k_start, k_end in zip(q_offsets[:-1], q_offsets[1:], k_offsets[:-1], k_offsets[1:]):
         q_part = q[q_start:q_end].permute(1, 0, 2)
-        k_part = _expand_kv_heads(k[k_start:k_end], q.shape[1], gqa_interleave).permute(1, 0, 2)
-        v_part = _expand_kv_heads(v[k_start:k_end], q.shape[1], gqa_interleave).permute(1, 0, 2)
+        # Expand in FP32 so autograd reduces shared-head gradients before
+        # casting once to the KV input dtype.
+        k_part = _expand_kv_heads(k[k_start:k_end].float(), q.shape[1], gqa_interleave).permute(1, 0, 2)
+        v_part = _expand_kv_heads(v[k_start:k_end].float(), q.shape[1], gqa_interleave).permute(1, 0, 2)
         scores = torch.bmm(q_part.float(), k_part.float().transpose(1, 2)) * softmax_scale
         if is_causal:
             mask = _window_mask(
@@ -423,8 +425,8 @@ def flash_attention_bwd(
     k: torch.Tensor,
     v: torch.Tensor,
     attention_mask: Optional[torch.Tensor],
-    output_f32: torch.Tensor,
     softmax_lse: torch.Tensor,
+    output_f32: torch.Tensor,
     cu_q_lens: torch.Tensor,
     cu_k_lens: torch.Tensor,
     max_q_len: int,

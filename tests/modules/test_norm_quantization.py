@@ -70,7 +70,7 @@ def norm_case(shape, dtype, mode, device, impl, *, fp8=False, smooth=False, affi
     state = {key: value for key, value in (("weight", weight), ("bias", bias)) if value is not None}
     call.load_state_dict(state)
     call = partial(call, smooth_scale=smooth_scale)
-    public_reference = function("torch_reference")
+    public_reference = function("torch")
 
     def reference(*args):
         actual = public_reference(*args)
@@ -118,7 +118,7 @@ def test_norm(accuracy_backend, shape, dtype, mode):
 @pytest.mark.parametrize("mode", NORM_MODES)
 def test_fp8_reference(shape, dtype, mode):
     # The original FP8 norm-quant tests run on CPU, not unsupported NPU kernels.
-    call, _, inputs = norm_case(shape, dtype, mode, "cpu", "torch_reference", fp8=True)
+    call, _, inputs = norm_case(shape, dtype, mode, "cpu", "torch", fp8=True)
     output = call(*inputs)
     assert output[0].dtype == torch.float8_e4m3fn
     assert output[0].shape == shape and output[-1].shape == (*shape[:-1], 1)

@@ -4,7 +4,11 @@ import pytest
 import torch
 
 from mojo_opset import functions as F
+from mojo_opset.functions._dispatch import load_impl
+from tests._checks import assert_accuracy
 from tests._checks import assert_close
+from tests._checks import assert_repeatable
+from tests._compile import compile_fullgraph
 
 
 def make_quant_batch(case, device):
@@ -20,9 +24,7 @@ def make_quant_batch(case, device):
 def batch_case(case, device, impl):
     x, w, s1, s2 = make_quant_batch(case, device)
     call = lambda a, b, c: F.quant_batch_gemm_reduce_sum(a, w, b, c, trans_weight=case[4], implementation=impl)
-    ref = lambda a, b, c: F.quant_batch_gemm_reduce_sum(
-        a, w, b, c, trans_weight=case[4], implementation="torch_reference"
-    )
+    ref = lambda a, b, c: F.quant_batch_gemm_reduce_sum(a, w, b, c, trans_weight=case[4], implementation="torch")
     return (call, ref, (x, s1, s2))
 
 
@@ -53,7 +55,7 @@ def group_case(case, dtype, device, impl):
         pytest.skip("Original torch_npu grouped matmul does not support float32")
     x, weight, counts = make_group(case, dtype, device)
     call = partial(F.group_gemm, weight=weight, trans_weight=case[4], implementation=impl)
-    ref = partial(F.group_gemm, weight=weight, trans_weight=case[4], implementation="torch_reference")
+    ref = partial(F.group_gemm, weight=weight, trans_weight=case[4], implementation="torch")
     return (lambda a, b: call(a, group_list=b), lambda a, b: ref(a, group_list=b), (x, counts))
 
 
@@ -86,13 +88,13 @@ def quant_case(case, dtype, transposed, device, impl):
         a, w, scale, ws, output_dtype=dtype, trans_weight=transposed, implementation=impl
     )
     ref = lambda a, scale: F.quant_gemm(
-        a, w, scale, ws, output_dtype=dtype, trans_weight=transposed, implementation="torch_reference"
+        a, w, scale, ws, output_dtype=dtype, trans_weight=transposed, implementation="torch"
     )
     return (call, ref, (x, xs))
 
 
 def skip_batch(impl, device):
-    if device == "npu" and impl != "torch_reference":
+    if device == "npu" and impl != "torch":
         pytest.skip("Inherited master exclusion: CANN 8.2 quantized batch reduction issue")
 
 
@@ -108,12 +110,33 @@ GROUP_GEMM_CASES = [
     (1, 3, 4, 6, False, [3]),
     (1, 5, 4, 6, False, [5]),
     (1, 10, 4, 6, False, [10]),
+    *[
+        (groups, groups - 1, 32, 48, transposed, [0] + [1] * (groups - 1))
+        for groups in (127, 128, 129)
+        for transposed in (False, True)
+    ],
+    (129, 1, 32, 48, False, [0] * 128 + [1]),
+    (129, 1, 32, 48, True, [1] + [0] * 128),
+    (3, 7, 32, 48, False, [2, 0, 5]),
+    (3, 7, 32, 48, True, [2, 0, 5]),
+    (3, 0, 32, 48, False, [0, 0, 0]),
+    (0, 0, 32, 48, True, []),
 ]
 
 
 GROUP_GEMM_TYPED_CASES = [(case, dtype) for case in GROUP_GEMM_CASES for dtype in (torch.float16, torch.bfloat16)] + [
     ((1, 16, 32, 64, False, [16]), torch.float32),
     ((1, 8, 16, 32, False, [8]), torch.float32),
+    # FP32 wgrad must fit CBUF across multiple reduction tiles and empty groups.
+    *[
+        pytest.param((3, 273, 33, 65, transposed, [0, 17, 256]), torch.float32, id=f"fp32-multitile-{transposed}")
+        for transposed in (False, True)
+    ],
+    # 384 experts / representative EP8 = 48; 1024 tokens * top-8 = 8192 rows.
+    *[
+        pytest.param((48, 8192, k, n, True, [0] + [174] * 46 + [188]), torch.bfloat16, id=f"g48-r8192-k{k}-n{n}")
+        for k, n in [(5120, 3072), (1536, 5120), (7168, 4096), (2048, 7168)]
+    ],
 ]
 
 
@@ -130,12 +153,26 @@ QUANT_GEMM_CASES = [(1, 4096, 4096), (32, 4096, 11008), (128, 2048, 4096), (64, 
 
 
 @pytest.mark.api("functions.group_gemm")
-@pytest.mark.accuracy
 @pytest.mark.parametrize("case,dtype", GROUP_GEMM_TYPED_CASES)
-def test_group(accuracy_backend, case, dtype):
-    impl, _, device = accuracy_backend
-    call, ref, inputs = group_case(case, dtype, device, impl)
-    check_group(call(*inputs), ref(*inputs), case, dtype)
+@pytest.mark.parametrize("backward", [False, True], ids=["forward", "backward"])
+@pytest.mark.parametrize(
+    "check", [pytest.param("accuracy", marks=pytest.mark.accuracy), pytest.param("bitwise", marks=pytest.mark.bitwise)]
+)
+def test_group(accuracy_backend, case, dtype, backward, check):
+    impl, target, device = accuracy_backend
+    if impl == "torch_npu" and dtype == torch.float32:
+        pytest.skip("Original torch_npu grouped matmul does not support float32")
+    if backward and load_impl("group_gemm", impl, target=target)[1] is None:
+        pytest.skip("group_gemm backward is not implemented by this backend")
+    x, weight, counts = make_group(case, dtype, device)
+    inputs = (x.requires_grad_(backward), weight.requires_grad_(backward))
+    call = partial(F.group_gemm, group_list=counts, trans_weight=case[4])
+    if check == "bitwise":
+        assert_repeatable(partial(call, implementation=impl), inputs, backward=backward)
+    elif backward:
+        assert_accuracy(call, inputs, implementation=impl)
+    else:
+        check_group(call(*inputs, implementation=impl), call(*inputs, implementation="torch"), case, dtype)
 
 
 @pytest.mark.api("functions.group_gemm")
@@ -143,8 +180,12 @@ def test_group(accuracy_backend, case, dtype):
 @pytest.mark.parametrize("layout", ["transposed", "row_strided", "column_strided"])
 @pytest.mark.parametrize("transposed", [False, True])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_group_input_layout(accuracy_backend, layout, transposed, dtype):
-    impl, _, device = accuracy_backend
+@pytest.mark.parametrize("training", [False, True])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_group_input_layout(accuracy_backend, layout, transposed, dtype, training, compiled):
+    impl, target, device = accuracy_backend
+    if compiled and (impl == "torch" or not target.startswith("npu.")):
+        pytest.skip("NPU backend custom-op compilation contract")
     case = (2, 17, 64, 32, transposed, [6, 11])
     _, rows, k, _, _, _ = case
     _, weight, counts = make_group(case, dtype, device)
@@ -152,15 +193,36 @@ def test_group_input_layout(accuracy_backend, layout, transposed, dtype):
         x = torch.randn(k, rows, dtype=dtype, device=device).t()
     elif layout == "row_strided":
         x = torch.randn(2 * rows, k, dtype=dtype, device=device)[::2]
+        counts = counts.cpu()
     else:
         x = torch.randn(rows, 2 * k, dtype=dtype, device=device)[:, 1::2]
+        counts = torch.tensor([6, 0, 11, 0], device=device, dtype=torch.int64)[::2]
     assert not x.is_contiguous()
-    actual = F.group_gemm(x, weight, counts, trans_weight=transposed, implementation=impl)
-    expected = F.group_gemm(
-        x, weight, counts, trans_weight=transposed, implementation="torch_reference"
-    )
-    check_group(actual, expected, case, dtype)
-    assert actual.is_contiguous()
+    if training and load_impl("group_gemm", impl)[1] is None:
+        pytest.skip("group_gemm backward is not implemented by this backend")
+    # Exercise noncontiguous weights as well as inputs through custom-op fakes.
+    weight = weight.transpose(1, 2).contiguous().transpose(1, 2)
+    x.requires_grad_(training)
+    weight.requires_grad_(training)
+    call = partial(F.group_gemm, group_list=counts, trans_weight=transposed, implementation=impl)
+    if compiled:
+        from mojo_opset import preload
+
+        preload("group_gemm", implementation=impl)
+        call = compile_fullgraph(call)
+    try:
+        actual = call(x, weight)
+        expected = F.group_gemm(x, weight, counts, trans_weight=transposed, implementation="torch")
+        check_group(actual, expected, case, dtype)
+        assert actual.is_contiguous()
+        if training:
+            upstream = torch.randn(actual.shape[1], actual.shape[0], device=device, dtype=dtype).T
+            actual_grads = torch.autograd.grad(actual, (x, weight), upstream)
+            expected_grads = torch.autograd.grad(expected, (x, weight), upstream)
+            assert_close(actual_grads, expected_grads, dtype)
+    finally:
+        if compiled:
+            torch._dynamo.reset()
 
 
 @pytest.mark.api("functions.quant_gemm")
@@ -195,7 +257,7 @@ def test_quant_reference(accuracy_backend, case, dtype, transposed):
     _, _, device = accuracy_backend
     x, weight, xscale, wscale = move_tensors(_make_int8_gemm_data(*case, transposed), device)
     actual = F.quant_gemm(
-        x, weight, xscale, wscale, output_dtype=dtype, trans_weight=transposed, implementation="torch_reference"
+        x, weight, xscale, wscale, output_dtype=dtype, trans_weight=transposed, implementation="torch"
     )
     w = weight.t() if transposed else weight
     expected = ((x.float() @ w.float()) * xscale[:, None] * wscale.float()[None, :]).to(dtype)

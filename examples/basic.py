@@ -8,8 +8,8 @@ def main() -> None:
     x = torch.randn(4, 128, requires_grad=True)
 
     # Public functions and modules share the same dispatch contract.
-    y = functions.silu(x, implementation="torch_reference")
-    norm = modules.RMSNorm(128, implementation="torch_reference")
+    y = functions.silu(x, implementation="torch")
+    norm = modules.RMSNorm(128, implementation="torch")
     output = norm(y)
     output.sum().backward()
 

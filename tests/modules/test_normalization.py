@@ -32,7 +32,7 @@ def make_norm_module_case(name, backend, dtype, *, norm_pos="pre", affine=True):
     if name.startswith("Residual"):
         kwargs["norm_pos"] = norm_pos
     actual = getattr(modules, name)(**kwargs, implementation=implementation)
-    expected = getattr(modules, name)(**kwargs, implementation="torch_reference")
+    expected = getattr(modules, name)(**kwargs, implementation="torch")
     with torch.no_grad():
         for parameter in actual.parameters():
             parameter.normal_()
@@ -106,7 +106,7 @@ def make_inference_norm_modules(name, shape, norm_pos, dtype, backend):
             options["norm_pos"] = norm_pos
     actual = getattr(modules, name)(**options, eps=1e-5, device=device, dtype=dtype, implementation=implementation)
     reference = getattr(modules, name)(
-        **options, eps=1e-5, device=device, dtype=dtype, implementation="torch_reference"
+        **options, eps=1e-5, device=device, dtype=dtype, implementation="torch"
     )
     with torch.no_grad():
         for parameter in actual.parameters():
@@ -131,7 +131,7 @@ RMS_NORM_CASES = [(shape, torch.float32) for shape in MOJO_RMS_SHAPES + M15_RMS_
 def test_rms_norm(accuracy_backend, dtype, shape, weight_dtype):
     implementation, target, device = accuracy_backend
     actual = modules.RMSNorm(shape[-1], device=device, dtype=weight_dtype, implementation=implementation)
-    expected = modules.RMSNorm(shape[-1], device=device, dtype=weight_dtype, implementation="torch_reference")
+    expected = modules.RMSNorm(shape[-1], device=device, dtype=weight_dtype, implementation="torch")
     with torch.no_grad():
         actual.weight.normal_()
         expected.weight.copy_(actual.weight)
@@ -189,7 +189,7 @@ def test_norm_infer(accuracy_backend, name, dtype):
 @pytest.mark.accuracy
 def test_group_layout(accuracy_backend, shapes, dtype):
     implementation, target, device = accuracy_backend
-    if implementation != "torch_reference" and not target.startswith("npu."):
+    if implementation != "torch" and not target.startswith("npu."):
         pytest.skip("NPU grouped normalization layout regression")
     selected = implementation or resolve_implementation("group_rms_norm_infer", Target.parse(target))
     groups = [torch.randn(shape, device=device, dtype=dtype) for shape in shapes]
@@ -197,7 +197,7 @@ def test_group_layout(accuracy_backend, shapes, dtype):
         len(groups), shapes[0][-1], device=device, dtype=dtype, implementation=implementation
     )
     reference = modules.GroupRMSNormInfer(
-        len(groups), shapes[0][-1], device=device, dtype=dtype, implementation="torch_reference"
+        len(groups), shapes[0][-1], device=device, dtype=dtype, implementation="torch"
     )
     with torch.no_grad():
         actual.weight.normal_()
@@ -279,7 +279,7 @@ def test_post_norm(accuracy_backend, name):
 @pytest.mark.accuracy
 @pytest.mark.reference
 def test_infer_autograd(name):
-    backend = ("torch_reference", "cpu.generic", "cpu")
+    backend = ("torch", "cpu.generic", "cpu")
     module, _, inputs = make_norm_module_case(name, backend, torch.float32)
     args = (list(inputs),) if name == "GroupRMSNormInfer" else inputs
     with pytest.raises(RuntimeError, match="does not support autograd"):

@@ -44,7 +44,7 @@ def test_swa_infer(benchmark, perf_environment, dim, max_cache):
 @pytest.mark.parametrize("seq_len", [64, 8192])
 def test_sdpa(benchmark, perf_environment, seq_len):
     _, device, _, implementation = perf_environment
-    if seq_len * 2 % 512 and implementation != "torch_reference":
+    if seq_len * 2 % 512 and implementation != "torch":
         pytest.skip("Inherited perf_new smoke case is outside Triton SDPA's 512-token alignment")
 
     def factory():

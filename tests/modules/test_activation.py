@@ -45,7 +45,7 @@ def test_activation(accuracy_backend, name, dtype, limit, shape):
     if name == "SiLU" and dtype == torch.float32 and shape in ((128, 128), (999, 9999), (1024, 10240)):
         inputs, reference = clone_with_grad(inputs), clone_with_grad(inputs)
         actual = run(*inputs, implementation=accuracy_backend[0])
-        expected = run(*reference, implementation="torch_reference")
+        expected = run(*reference, implementation="torch")
         upstream = torch.rand_like(actual)
         (actual_grad,) = torch.autograd.grad(actual, inputs, upstream)
         (expected_grad,) = torch.autograd.grad(expected, reference, upstream)
@@ -93,7 +93,7 @@ def test_gelu_exact(accuracy_backend, shape, dtype):
     x = torch.randn(shape, device=device, dtype=dtype, requires_grad=True)
     reference_x = x.detach().clone().requires_grad_()
     actual = modules.GELU(approximate="none", implementation=implementation)(x)
-    expected = functions.gelu(reference_x, approximate="none", implementation="torch_reference")
+    expected = functions.gelu(reference_x, approximate="none", implementation="torch")
     upstream = torch.rand_like(x)
     (actual_grad,) = torch.autograd.grad(actual, x, upstream)
     (expected_grad,) = torch.autograd.grad(expected, reference_x, upstream)

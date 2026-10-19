@@ -5,9 +5,8 @@ import torch
 import triton
 import triton.language as tl
 
-from mojo_opset.kernels._npu_triton_utils import libentry
-
 from mojo_opset.kernels._npu_triton_utils import VEC_ALIGN_BYTES
+from mojo_opset.kernels._npu_triton_utils import libentry
 from mojo_opset.kernels._triton_utils import align
 
 """
@@ -23,6 +22,12 @@ Modifications for NPU architecture by triton-x team, 2025.
 
 
 COL_BLOCKING_THRESHOLD = 2048
+
+
+def _prune_tile_configs(configs, named_args, **kwargs):
+    # Bound live FP32 tiles for forward and backward within A2's UB capacity.
+    columns = kwargs["BLOCK_SIZE_N"]
+    return [config for config in configs if config.kwargs["BLOCK_SIZE_M"] * columns <= 4096]
 
 
 @triton.jit
@@ -43,7 +48,9 @@ def silu(x):
         triton.Config({"BLOCK_SIZE_M": 24}),
         triton.Config({"BLOCK_SIZE_M": 32}),
     ],
-    key=["n_cols"],
+    # Scales add live buffers; never reuse an unscaled autotune result.
+    key=["n_cols", "HAS_SCALES"],
+    prune_configs_by={"early_config_prune": _prune_tile_configs},
 )
 @libentry()
 @triton.jit(do_not_specialize=["n_rows"])
@@ -105,7 +112,9 @@ def _swiglu_fwd_kernel(
         triton.Config({"BLOCK_SIZE_M": 24}),
         triton.Config({"BLOCK_SIZE_M": 32}),
     ],
-    key=["n_cols"],
+    # Scales add live buffers; never reuse an unscaled autotune result.
+    key=["n_cols", "HAS_SCALES"],
+    prune_configs_by={"early_config_prune": _prune_tile_configs},
     restore_value=["dc", "da", "db", "dscales"],
 )
 @libentry()
@@ -353,7 +362,13 @@ def _swiglu_bwd_fake(
     scales: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     del grad_output
-    grad_scales = (torch.empty(0, dtype=x1.dtype, device=x1.device) if scales is None
-                   else torch.empty_like(scales, memory_format=torch.contiguous_format))
-    return (torch.empty_like(x1, memory_format=torch.contiguous_format),
-            torch.empty_like(x2, memory_format=torch.contiguous_format), grad_scales)
+    grad_scales = (
+        torch.empty(0, dtype=x1.dtype, device=x1.device)
+        if scales is None
+        else torch.empty_like(scales, memory_format=torch.contiguous_format)
+    )
+    return (
+        torch.empty_like(x1, memory_format=torch.contiguous_format),
+        torch.empty_like(x2, memory_format=torch.contiguous_format),
+        grad_scales,
+    )

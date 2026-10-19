@@ -80,7 +80,7 @@ def test_ngram(accuracy_backend, case):
     implementation, _, device = accuracy_backend
     function, inputs = _ngram_call(case, device)
     actual = function(*inputs, implementation=implementation)
-    expected = function(*inputs, implementation="torch_reference")
+    expected = function(*inputs, implementation="torch")
     assert_close(actual, expected, rtol=0, atol=0)
     if case == "basic-prefill":
         golden = torch.tensor(

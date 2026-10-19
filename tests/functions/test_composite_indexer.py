@@ -35,7 +35,7 @@ def make_composite_case(case, dtype, device, implementation):
         max_batch_size=batch,
         max_seq_len=tokens,
     )
-    reference = modules.Indexer(**options, implementation="torch_reference").to(device=device, dtype=dtype)
+    reference = modules.Indexer(**options, implementation="torch").to(device=device, dtype=dtype)
     actual = modules.Indexer(**options, implementation=implementation).to(device=device, dtype=dtype)
     with torch.no_grad():
         for parameter in reference.parameters():

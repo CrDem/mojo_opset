@@ -30,6 +30,12 @@ def test_store(accuracy_backend, shape, tokens):
     cache, *inputs = make_store_case(shape, tokens, device)
     actual = functions.store_lowrank(cache, *inputs, tokens, implementation=implementation)
     expected_cache = torch.zeros_like(cache)
-    expected = functions.store_lowrank(expected_cache, *inputs, tokens, implementation="torch_reference")
+    expected = functions.store_lowrank(expected_cache, *inputs, tokens, implementation="torch")
     assert actual is cache
     assert_close(actual, expected, rtol=0, atol=0)
+    # Verify the device-side reference independently: NPU advanced indexing can
+    # silently write the wrong slots for a multi-head cache.
+    keys, blocks, indices = (value.cpu() for value in inputs)
+    expected_cpu = torch.zeros(shape, dtype=cache.dtype)
+    expected_cpu[blocks.long(), :, indices.long(), :] = keys
+    assert_close(expected.cpu(), expected_cpu, rtol=0, atol=0)

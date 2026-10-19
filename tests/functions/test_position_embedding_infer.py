@@ -96,7 +96,7 @@ def test_rope(accuracy_backend, shape, heads, mode):
     ):
         pytest.skip("Original torch_npu BNSD rotary half-dimension alignment restriction")
     op = partial(F.rope_infer, head_first=head_first, implementation=impl)
-    expected = F.rope_infer(*inputs, head_first=head_first, implementation="torch_reference")
+    expected = F.rope_infer(*inputs, head_first=head_first, implementation="torch")
     actual = op(*inputs)
     for a, e in zip(actual, expected):
         assert_close(a, e, heads[0], rtol=5e-2, atol=5e-2)
@@ -166,7 +166,7 @@ def test_vision(accuracy_backend, grid, dtype):
     impl, _, device = accuracy_backend
     inputs = make_vision(grid, dtype, device)
     op = partial(F.vision_rope_2d_infer, implementation=impl)
-    expected = F.vision_rope_2d_infer(*inputs, implementation="torch_reference")
+    expected = F.vision_rope_2d_infer(*inputs, implementation="torch")
     actual = op(*inputs)
     for a, e in zip(actual, expected):
         assert_close(a, e, dtype, rtol=5e-2, atol=5e-2)
