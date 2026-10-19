@@ -36,6 +36,9 @@ ROPE_CASES = [
     ]
     for dim, rotary_dim in [(128, 128), (88, 88), (128, 48)]
 ] + [
+    # Exercise vector repeat-count and FP32 mask-width boundaries.
+    pytest.param(1, 555, 4, 2, False, 128, 16, id="repeat-boundary-r16"),
+    pytest.param(1, 7, 4, 2, False, 256, 256, id="mask-boundary-r256"),
     # Real head counts and rotary width; T=1024 is a single-card CI truncation.
     pytest.param(1, 1024, 48, 8, False, 128, 48, id="h48-kv8-t1024-r48"),
     pytest.param(1, 1024, 56, 8, False, 128, 48, id="h56-kv8-t1024-r48"),
@@ -117,7 +120,7 @@ def test_rope_layout(accuracy_backend, head_first, rotary_dim, table_dtype):
 
 
 @pytest.mark.api("functions.rope")
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
 @pytest.mark.accuracy
 def test_rope_cache(accuracy_backend, dtype):
     device = accuracy_backend[2]
@@ -184,9 +187,9 @@ def test_rope_shapes_bitwise(accuracy_backend, batch, tokens, q_heads, k_heads, 
 @pytest.mark.parametrize("backend", ["eager", "aot_eager"])
 def test_compiled_layout(accuracy_backend, op, backend):
     implementation, target, device = accuracy_backend
-    if implementation not in (None, "triton") or not target.startswith("npu."):
-        pytest.skip("NPU Triton contiguous-output contract")
-    implementation = "triton"
+    if implementation not in (None, "triton", "native") or not target.startswith("npu."):
+        pytest.skip("NPU contiguous-output contract")
+    implementation = implementation or "triton"
     scaled = op == "swiglu_scaled"
     op = "swiglu" if scaled else op
     preload(op, implementation=implementation)

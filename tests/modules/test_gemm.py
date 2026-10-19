@@ -51,8 +51,8 @@ def make_group(case, dtype, device):
 
 
 def group_case(case, dtype, device, impl):
-    if impl == "torch_npu" and dtype == torch.float32:
-        pytest.skip("Original torch_npu grouped matmul does not support float32")
+    if impl in ("torch_npu", "native") and dtype == torch.float32:
+        pytest.skip("torch_npu/native grouped matmul supports FP16/BF16")
     x, weight, counts = make_group(case, dtype, device)
     call = M.GroupGemm(weight, case[4], implementation=impl)
     ref = partial(F.group_gemm, weight=weight, trans_weight=case[4], implementation="torch")

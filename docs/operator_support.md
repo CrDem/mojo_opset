@@ -14,12 +14,12 @@ supported shapes, dtypes and options.
 | `diffusion_attention` | triton | triton |
 | `dynamic_quant` | triton, torch_npu | triton, torch_npu |
 | `embedding_nf4_dequant` | triton | triton |
-| `flash_attention` | triton, torch_npu | triton, torch_npu |
+| `flash_attention` | triton, torch_npu, native | triton, torch_npu |
 | `flash_attention_infer` | triton | triton |
 | `flex_attention` | triton | triton |
 | `flex_attention_v2` | triton | triton |
 | `gelu` | triton, torch_npu | triton, torch_npu |
-| `group_gemm` | triton, torch_npu | triton, torch_npu |
+| `group_gemm` | triton, torch_npu, native | triton, torch_npu |
 | `group_rms_norm_infer` | triton, torch_npu | triton, torch_npu |
 | `indexer` | triton components | triton components |
 | `join_prob_reject_sampling` | triton | triton |
@@ -47,7 +47,7 @@ supported shapes, dtypes and options.
 | `rms_norm` | triton | triton |
 | `rms_norm_infer` | triton, torch_npu | triton, torch_npu |
 | `rms_norm_quant` | torch_npu | torch_npu |
-| `rope` | triton | triton |
+| `rope` | triton, native | triton |
 | `rope_cos_sin` | triton | triton |
 | `rope_infer` | triton, torch_npu | triton, torch_npu |
 | `rotate_activation` | torch | torch |
@@ -58,7 +58,7 @@ supported shapes, dtypes and options.
 | `store_paged_kv_cache` | triton | triton |
 | `swa` | triton | triton |
 | `swa_infer` | triton | triton |
-| `swiglu` | triton, torch_npu | triton, torch_npu |
+| `swiglu` | triton, torch_npu, native | triton, torch_npu |
 | `top_k_sampling` | triton | triton |
 | `top_p_filter` | triton | triton |
 | `top_p_sampling` | triton | triton |

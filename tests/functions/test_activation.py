@@ -50,7 +50,7 @@ def test_unary(accuracy_backend, function_name, dtype, shape):
 
 
 @pytest.mark.api("functions.swiglu")
-@pytest.mark.parametrize("dtype", (torch.float32, torch.bfloat16))
+@pytest.mark.parametrize("dtype", (torch.float32, torch.bfloat16, torch.float16))
 @pytest.mark.parametrize("limit", [0.0, 0.5])
 @pytest.mark.parametrize("shape", SWIGLU_SHAPES)
 @pytest.mark.parametrize("scale_dtype", [None, torch.bfloat16, torch.float32])
@@ -178,8 +178,8 @@ def test_gelu_reference(accuracy_backend, approximate, dtype):
 @pytest.mark.parametrize("backend", ["eager", "aot_eager"])
 def test_compiled_layout(accuracy_backend, op, backend, scale_dtype):
     implementation, target, device = accuracy_backend
-    if implementation not in (None, "triton", "torch_npu") or not target.startswith("npu."):
-        pytest.skip("NPU Triton/torch_npu contiguous-output contract")
+    if implementation not in (None, "triton", "torch_npu", "native") or not target.startswith("npu."):
+        pytest.skip("NPU contiguous-output contract")
     implementation = implementation or "triton"
     preload(op, implementation=implementation)
     x = torch.randn(17, 7, device=device, dtype=torch.bfloat16).T.requires_grad_()

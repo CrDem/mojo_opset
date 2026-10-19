@@ -33,6 +33,9 @@ set(TORCH_NPU_LIB_DIR "${TORCH_NPU_ROOT}/lib")
 if(NOT MOJO_NATIVE_PROVIDER STREQUAL "npu_a5")
     include("${ASCEND_CANN_PACKAGE_PATH}/compiler/tikcpp/ascendc_kernel_cmake/ascendc.cmake")
 endif()
+# CANN changes this directory setting while loading its helpers. Restore it
+# before creating operator libraries so their runtime dependencies retain RPATH.
+set(CMAKE_SKIP_RPATH FALSE)
 set(_cann_arch_dir "${ASCEND_CANN_PACKAGE_PATH}/${CMAKE_SYSTEM_PROCESSOR}-linux")
 set(MOJO_ASCEND_INCLUDE_DIRS
     "${ASCEND_CANN_PACKAGE_PATH}/include"

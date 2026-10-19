@@ -145,6 +145,10 @@ Intermediates live in `build/native/<provider>/<operator>/build.XXXXXX` and are
 removed on success, retained on failure. Use `MOJO_NATIVE_KEEP_BUILD=1` to keep
 them or `BUILD_JOBS` to control parallelism.
 
+A2 `flash_attention` uses the training kernels in `fa_fwd/` and `fa_bwd/`.
+The existing `varlen_fa_infer` API continues to use `varlen_fa/`; dispatch
+selects by operator name, not by `requires_grad`.
+
 For A2 Varlen FA, initialize the public CATLASS submodule (pinned to the tested
 v1.1.0 commit `3a28eb7bfc5fe4621f13d7aa5d39ccabd163e191`):
 

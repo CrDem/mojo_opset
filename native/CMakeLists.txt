@@ -83,7 +83,7 @@ function(mojo_native_operator name)
     string(TOUPPER "${name}" _operator_define)
     target_compile_definitions(_native PRIVATE "MOJO_NATIVE_WITH_${_operator_define}=1")
     target_sources(_native PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/host.cpp")
-    target_include_directories(_native PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/kernel")
+    target_include_directories(_native PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/kernel")
     target_link_libraries(_native PRIVATE ${ARGN})
 endfunction()
 

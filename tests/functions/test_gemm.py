@@ -51,8 +51,8 @@ def make_group(case, dtype, device):
 
 
 def group_case(case, dtype, device, impl):
-    if impl == "torch_npu" and dtype == torch.float32:
-        pytest.skip("Original torch_npu grouped matmul does not support float32")
+    if impl in ("torch_npu", "native") and dtype == torch.float32:
+        pytest.skip("torch_npu/native grouped matmul supports FP16/BF16")
     x, weight, counts = make_group(case, dtype, device)
     call = partial(F.group_gemm, weight=weight, trans_weight=case[4], implementation=impl)
     ref = partial(F.group_gemm, weight=weight, trans_weight=case[4], implementation="torch")
@@ -160,8 +160,8 @@ QUANT_GEMM_CASES = [(1, 4096, 4096), (32, 4096, 11008), (128, 2048, 4096), (64, 
 )
 def test_group(accuracy_backend, case, dtype, backward, check):
     impl, target, device = accuracy_backend
-    if impl == "torch_npu" and dtype == torch.float32:
-        pytest.skip("Original torch_npu grouped matmul does not support float32")
+    if impl in ("torch_npu", "native") and dtype == torch.float32:
+        pytest.skip("torch_npu/native grouped matmul supports FP16/BF16")
     if backward and load_impl("group_gemm", impl, target=target)[1] is None:
         pytest.skip("group_gemm backward is not implemented by this backend")
     x, weight, counts = make_group(case, dtype, device)
