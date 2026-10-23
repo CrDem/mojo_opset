@@ -262,7 +262,6 @@ def _silu_fwd_nomask_single_kernel(
         triton.Config({"BLOCK_SIZE_M": 32}),
     ],
     key=["n_rows", "n_cols"],
-    restore_value=["dy", "dx"],
 )
 @libentry()
 @triton.jit

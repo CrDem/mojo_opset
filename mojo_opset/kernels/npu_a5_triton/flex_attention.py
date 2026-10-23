@@ -1226,7 +1226,6 @@ def flex_attention_backward_dkdv_kernel_tasklist(
         triton.Config({"BLOCK_N": 128}),
     ],
     key=["SPARSE_KV_BLOCK_SIZE"],
-    restore_value=["DK", "DV"],
 )
 @triton.jit(
     do_not_specialize=[
@@ -1330,7 +1329,6 @@ def reduce_dkdv_kernel_tasklist(
         triton.Config({"BLOCK_N": 128}),
     ],
     key=["K", "SPARSE_KV_BLOCK_SIZE"],
-    restore_value=["DK", "DV"],
 )
 @triton.jit(
     do_not_specialize=[

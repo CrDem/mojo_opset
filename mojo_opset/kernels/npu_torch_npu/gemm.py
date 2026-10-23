@@ -1,5 +1,7 @@
 """torch_npu GEMM leaves; quantized reduction retains the original BF16 contract."""
 
+import os
+
 import torch
 import torch_npu
 
@@ -14,6 +16,26 @@ def group_gemm_fwd(
     input = input.contiguous()
     if trans_weight:
         weight = weight.transpose(1, 2).contiguous()
+    num_experts = weight.shape[0]
+    if group_list.ndim != 1 or group_list.numel() != num_experts:
+        raise ValueError("group_list must contain one count per expert")
+    # Routing-produced device counts partition input; validate CPU metadata and
+    # opt-in debug runs, without imposing a host sync on every NPU GEMM.
+    device_counts = group_list.device.type in ("npu", "privateuseone")
+    if num_experts <= 128 and device_counts and os.getenv("MOJO_NPU_VALIDATE_GROUP_COUNTS", "0") != "1":
+        if input.shape[0] == 0:
+            return input.new_empty((0, weight.shape[-1]))
+        if num_experts == 0:
+            raise ValueError("nonempty input requires at least one expert")
+        weights = [weight.contiguous()] if num_experts == 1 else [w.contiguous() for w in weight.unbind(0)]
+        outputs = torch_npu.npu_grouped_matmul(
+            [input], weights,
+            group_list=group_list.to(device=input.device, dtype=torch.int64).cumsum(0),
+            split_item=2, group_type=0,
+        )
+        if len(outputs) != 1:
+            raise RuntimeError("expected one M-split grouped matmul output")
+        return outputs[0]
     counts = group_list.to(device="cpu", dtype=torch.int64).tolist()
     if any(size < 0 for size in counts) or sum(counts) != input.shape[0]:
         raise ValueError("group_list must contain nonnegative row counts summing to M")
@@ -58,7 +80,7 @@ def _group_wgrad(dy: torch.Tensor, input: torch.Tensor, counts: torch.Tensor) ->
     )
     if input.shape[0] == 0:
         return gradient.to(input.dtype)
-    gradient = torch_npu.npu_grouped_matmul_add(
+    torch_npu.npu_grouped_matmul_add_(
         gradient,
         input.contiguous(),
         dy.contiguous(),

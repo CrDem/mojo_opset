@@ -164,7 +164,6 @@ def _gelu_fwd_nomask_single_kernel(
 @triton.autotune(
     configs=GELU_TANH_BLOCK_SIZE_M_CONFIGS,
     key=["n_rows", "n_cols"],
-    restore_value=["dy", "dx"],
 )
 @libentry()
 @triton.jit
