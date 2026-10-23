@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from mojo_opset import functions as F
+from tests._fixtures import check_swa_case
 
 
 @pytest.mark.api("functions.swa")
@@ -13,6 +14,7 @@ from mojo_opset import functions as F
 @pytest.mark.parametrize("interleave", [False, True])
 def test_swa_backward_varlen(accuracy_backend, lengths, dtype, interleave):
     implementation, _, device = accuracy_backend
+    selected = check_swa_case(accuracy_backend, dtype=dtype, interleave=interleave)
     generator = torch.Generator().manual_seed(17)
     q_heads, kv_heads, dim = 4, 2, 128
     local_window, global_window = 128, 32
@@ -59,7 +61,7 @@ def test_swa_backward_varlen(accuracy_backend, lengths, dtype, interleave):
             global_window_size=global_window,
             softmax_scale=dim**-0.5,
             gqa_interleave=interleave,
-            output_f32=True,
+            output_f32=selected != "torch_npu",
             implementation=implementation,
         )
         actual.backward(grad_out)

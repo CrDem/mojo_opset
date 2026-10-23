@@ -13,6 +13,7 @@ from mojo_opset import preload
 from tests._checks import assert_accuracy
 from tests._checks import assert_repeatable
 from tests._compile import compile_fullgraph
+from tests._fixtures import check_swa_case
 
 from .._checks import assert_close
 from .._checks import assert_mojo_close
@@ -197,8 +198,10 @@ def make_attention_case(device, batch, q_heads, kv_heads, dim, max_q, max_cache,
 @pytest.mark.api("functions.swa")
 @pytest.mark.parametrize("interleave", [False, True])
 @pytest.mark.parametrize("windows", [(None, None), (63, 4), (None, 16)])
+@pytest.mark.parametrize("output_f32", [False, True])
 @pytest.mark.accuracy
-def test_swa_windows(accuracy_backend, interleave, windows):
+def test_swa_windows(accuracy_backend, interleave, windows, output_f32):
+    check_swa_case(accuracy_backend, interleave=interleave, windows=windows, output_f32=output_f32)
     device = accuracy_backend[2]
     cu = torch.tensor([0, 97, 256], dtype=torch.int32, device=device)
 
@@ -212,7 +215,7 @@ def test_swa_windows(accuracy_backend, interleave, windows):
             local_window_size=windows[0],
             global_window_size=windows[1],
             gqa_interleave=interleave,
-            output_f32=True,
+            output_f32=output_f32,
             **selection,
         )
 
@@ -264,6 +267,8 @@ def _make_attention_inputs(device, dtype, tokens=256, q_heads=4, kv_heads=2):
 @pytest.mark.accuracy
 def test_attention(accuracy_backend, dtype, function_name, output_f32, tokens, q_heads, kv_heads, causal, packed):
     implementation, _, device = accuracy_backend
+    if function_name == "swa":
+        check_swa_case(accuracy_backend, output_f32=output_f32)
     reference_inputs = _make_attention_inputs(device, dtype, tokens, q_heads, kv_heads)
     if packed:
         reference_inputs = (
@@ -382,6 +387,8 @@ def test_native_swa_infer(accuracy_backend, heads, interleave, window, lengths, 
 @pytest.mark.bitwise
 def test_attention_bitwise(accuracy_backend, op, output_f32, q_tokens, k_tokens, q_heads, kv_heads, dtype, causal):
     implementation, _, device = accuracy_backend
+    if op == "swa":
+        check_swa_case(accuracy_backend, output_f32=output_f32)
     inputs = tuple(
         torch.randn(tokens, heads, 128, device=device, dtype=dtype, requires_grad=True)
         for tokens, heads in ((q_tokens, q_heads), (k_tokens, kv_heads), (k_tokens, kv_heads))
@@ -424,6 +431,9 @@ def test_swa(
     accuracy_backend, batch, q_heads, kv_heads, dim, max_q, max_cache, dtype, interleave, global_window, local_window
 ):
     implementation, _, device = accuracy_backend
+    selected = check_swa_case(accuracy_backend, dtype=dtype, dim=dim, interleave=interleave)
+    # CANN retains the BF16 output; compare the same cache precision in the reference.
+    output_f32 = selected != "torch_npu"
     inputs, cq, ck = make_attention_case(device, batch, q_heads, kv_heads, dim, max_q, max_cache, dtype)
     options = dict(
         is_causal=True,
@@ -432,11 +442,11 @@ def test_swa(
         softmax_scale=dim**-0.5,
         gqa_interleave=interleave,
     )
-    actual = F.swa(*inputs, cq, ck, implementation=implementation, output_f32=True, **options)
+    actual = F.swa(*inputs, cq, ck, implementation=implementation, output_f32=output_f32, **options)
     upstream = torch.randn_like(actual)
     actual_grads = torch.autograd.grad(actual, inputs, upstream)
     reference = clone_with_grad(inputs)
-    expected = F.swa(*reference, cq, ck, implementation="torch", output_f32=True, **options)
+    expected = F.swa(*reference, cq, ck, implementation="torch", output_f32=output_f32, **options)
     expected_grads = torch.autograd.grad(expected, reference, upstream)
     assert_mojo_close(actual, expected)
     for index, (actual_grad, expected_grad) in enumerate(zip(actual_grads, expected_grads)):
@@ -461,6 +471,7 @@ def test_swa_shapes_bitwise(
     local_window,
 ):
     implementation, _, device = accuracy_backend
+    selected = check_swa_case(accuracy_backend, dtype=dtype, dim=dim, interleave=interleave)
     if max_q > 8192 and (device != "npu" or implementation == "torch"):
         pytest.skip("original long cases require an optimized NPU provider")
     inputs, cq, ck = make_attention_case(device, batch, q_heads, kv_heads, dim, max_q, max_cache, dtype)
@@ -470,7 +481,7 @@ def test_swa_shapes_bitwise(
             local_window_size=local_window,
             global_window_size=global_window,
             gqa_interleave=interleave,
-            output_f32=True,
+            output_f32=selected != "torch_npu",
             implementation=implementation,
         ),
         (*inputs, cq, ck),
@@ -541,6 +552,8 @@ def test_compiled_leaves(accuracy_backend, op, output_f32):
     implementation, target, device = accuracy_backend
     if implementation not in (None, "triton", "torch_npu") or not target.startswith("npu."):
         pytest.skip("NPU leaf decomposition contract")
+    if op == "swa":
+        implementation = check_swa_case(accuracy_backend, output_f32=output_f32)
     preload(op, implementation=implementation, target=target)
     nodes = {"forward": [], "backward": []}
 
@@ -558,10 +571,22 @@ def test_compiled_leaves(accuracy_backend, op, output_f32):
     def run(q, k, v):
         if op == "flash_attention":
             return F.flash_attention(q, k, v, cu, cu, 128, 128, causal=True, implementation=implementation)
-        return F.swa(q, k, v, cu, cu, output_f32=output_f32, implementation=implementation)
+        return F.swa(
+            q,
+            k,
+            v,
+            cu,
+            cu,
+            local_window_size=63,
+            global_window_size=4,
+            output_f32=output_f32,
+            implementation=implementation,
+        )
 
     expected_forward = {"swa_fwd"}
     expected_backward = {"swa_preprocess", "swa_dkdv", "swa_dq"}
+    if op == "swa" and implementation == "torch_npu":
+        expected_backward = {"swa_bwd"}
     if op == "flash_attention" and implementation == "torch_npu":
         expected_forward = {"flash_attention_fwd"}
         expected_backward = {"flash_attention_bwd"}
@@ -704,6 +729,8 @@ def test_prebound(accuracy_backend, monkeypatch, op, compiled):
     from mojo_opset.functions._dispatch import load_impl
 
     impl, target, device = accuracy_backend
+    if op == "swa":
+        impl = check_swa_case(accuracy_backend)
     if compiled and impl == "torch":
         pytest.skip("Torch attention reference uses eager variable-length loops")
     forward, backward = load_impl(op, impl, target=target, require_backward=True)
@@ -711,7 +738,7 @@ def test_prebound(accuracy_backend, monkeypatch, op, compiled):
     inputs = _make_attention_inputs(device, torch.bfloat16, 128, 4, 2)
     cu = torch.tensor([0, 128], device=device, dtype=torch.int32)
     options = (
-        (cu, cu, True, 63, 4, 128**-0.5, False, True, impl)
+        (cu, cu, True, 63, 4, 128**-0.5, False, impl != "torch_npu", impl)
         if op == "swa"
         else (None, cu, cu, 128, 128, 0.0, 128**-0.5, True, True, impl)
     )

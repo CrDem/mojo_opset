@@ -39,6 +39,8 @@ def group_gemm_fwd(
                 )
             )
         token_start = token_end
+    if len(outputs) == 1:
+        return outputs[0]
     return torch.cat(outputs, dim=0) if outputs else input.new_empty((0, weight.shape[-1]))
 
 

@@ -115,7 +115,7 @@ def _swiglu_fwd_kernel(
     # Scales add live buffers; never reuse an unscaled autotune result.
     key=["n_cols", "HAS_SCALES"],
     prune_configs_by={"early_config_prune": _prune_tile_configs},
-    restore_value=["dc", "da", "db", "dscales"],
+    # Inputs are read-only; each launch fully overwrites the gradient outputs.
 )
 @libentry()
 @triton.jit(do_not_specialize=["n_rows"])

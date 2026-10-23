@@ -40,6 +40,33 @@ def check_implementation(op_ids, implementation, target):
                 pytest.skip(f"{selected} has no provider for {op_id} on {target}")
 
 
+def check_swa_case(backend, *, dtype=torch.bfloat16, dim=128, interleave=False, output_f32=False, windows=(128, 16)):
+    """Select a SWA provider and exclude only its documented unsupported parameters."""
+    implementation, target, _ = backend
+    selected = implementation or _dispatch.resolve_implementation("swa", Target.parse(target))
+    if selected == "torch_npu":
+        if dtype != torch.bfloat16 or dim != 128:
+            pytest.skip("torch_npu SWA requires BF16 head_dim=128")
+        if interleave:
+            pytest.skip("torch_npu SWA requires non-interleaved GQA")
+        if output_f32:
+            pytest.skip("torch_npu SWA has no FP32 output cache")
+        local, prefix = windows
+        if local is None or local <= 0 or prefix is None or prefix < 0:
+            pytest.skip("torch_npu SWA requires explicit positive local and nonnegative global windows")
+    return selected
+
+
+def check_moe_scatter_case(backend, *, weighted=False, dropped_routes=False):
+    """A5 native only implements unweighted, complete route permutations."""
+    implementation, target, _ = backend
+    target = Target.parse(target)
+    selected = implementation or _dispatch.resolve_implementation("moe_scatter", target)
+    if target.arch_key == "npu.a5" and selected == "native" and (weighted or dropped_routes):
+        pytest.skip("A5 native moe_scatter requires unweighted, complete route permutations")
+    return selected
+
+
 @pytest.fixture(autouse=True)
 def operator_test(request, monkeypatch):
     torch.manual_seed(42)
